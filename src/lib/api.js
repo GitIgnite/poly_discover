@@ -102,6 +102,14 @@ export async function getKnowledgeStats() {
   }
 }
 
+export async function getTopStrategies(limit = 20) {
+  try {
+    return await apiCall(`/api/knowledge/top-strategies?limit=${limit}`);
+  } catch (e) {
+    return { success: false, data: [], total: 0, error: String(e) };
+  }
+}
+
 export async function exportResults(params = {}) {
   try {
     const query = new URLSearchParams();

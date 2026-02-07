@@ -87,10 +87,11 @@ crates/
 ```
 src/
 ├── App.svelte              Page router + global discovery polling (every 2s)
-├── lib/api.js              All backend HTTP calls (discover, cancel, knowledge, optimize, binance)
+├── lib/api.js              All backend HTTP calls (discover, cancel, knowledge, top-strategies, optimize, binance)
 ├── lib/stores.js           Svelte writable stores (currentPage, serverHealth, discoveryStatus)
 ├── pages/
 │   ├── Discovery.svelte    Start/Stop button, reads global discoveryStatus store
+│   ├── TopStrategies.svelte Top 20 unique strategies by win rate, podium, auto-refresh
 │   ├── KnowledgeBase.svelte Auto-refresh when discovery running, LIVE badge
 │   └── Optimizer.svelte    Parameter optimization UI
 └── components/
@@ -106,8 +107,9 @@ Le statut discovery est géré au niveau **App.svelte** (pas dans Discovery.svel
 - **`discoveryStatus` store** (`stores.js`) : contient running, phase, progress, cycle, best_so_far, etc.
 - **Polling global** (App.svelte) : toutes les 2s, appelle `/api/discover/status` et met à jour le store
 - **Discovery.svelte** : lit le store, affiche Start/Stop, aucun polling local
+- **TopStrategies.svelte** : top 20 dédupliqué par `strategy_name`, auto-refresh 5s, podium top 3, badge LIVE
 - **KnowledgeBase.svelte** : auto-refresh toutes les 5s quand `$discoveryStatus.running === true`, badge LIVE
-- **Sidebar.svelte** : pulse dot animé + compteur quand discovery tourne
+- **Sidebar.svelte** : pulse dot animé + compteur quand discovery tourne (4 nav items: Discovery, Top 20, Knowledge Base, Optimizer)
 
 ## Strategy Catalog
 
@@ -233,6 +235,7 @@ Le système utilise une estimation dynamique de probabilité basée sur le chang
 | POST | `/api/optimize` | Start parameter optimization |
 | GET | `/api/optimize/status` | Poll optimization progress |
 | GET | `/api/knowledge` | Paginated backtest results |
+| GET | `/api/knowledge/top-strategies` | Top unique strategies (deduplicated by name) |
 | GET | `/api/knowledge/stats` | Aggregated statistics |
 | GET | `/api/export` | Export results as JSON |
 | GET | `/api/binance/klines` | Proxy to Binance API |
@@ -322,6 +325,22 @@ Ports à ouvrir dans le Security Group EC2 :
 | 4000 | poly-discover |
 
 ## Historique des changements récents
+
+### Page Top 20 Strategies — Classement dédupliqué par win rate (2026-02-08)
+
+**Nouvelle page** affichant les 20 meilleures stratégies uniques par win rate, dédupliquées (1 ligne = 1 strategy_name).
+
+**Changements backend :**
+- `crates/persistence/src/repository/discovery.rs` : nouvelle méthode `get_top_unique_strategies(limit)` — requête SQL avec CTE + `ROW_NUMBER() OVER (PARTITION BY strategy_name)`, filtre `total_trades >= 5`
+- `crates/server/src/main.rs` : nouveau endpoint `GET /api/knowledge/top-strategies` avec paramètre optionnel `limit` (default 20)
+
+**Changements frontend :**
+- `src/lib/api.js` : nouvelle fonction `getTopStrategies(limit)`
+- `src/pages/TopStrategies.svelte` : nouvelle page — podium visuel top 3 (or/argent/bronze), tableau complet avec rank/strategy/symbol/win rate/PnL/confidence/ann. return/sortino/sharpe/drawdown/trades/params, auto-refresh 5s quand discovery tourne, badge LIVE
+- `src/App.svelte` : routing `top-strategies`
+- `src/components/Sidebar.svelte` : nouvel item "Top 20" avec icône Trophy (couleur yellow), import `Trophy` de lucide-svelte
+
+---
 
 ### Backtester Avancé — Probabilités, Métriques Annualisées, IHM Enrichie (2026-02-07)
 
