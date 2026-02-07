@@ -29,6 +29,15 @@ pub struct DiscoveryBacktestRecord {
     pub avg_locked_profit: Option<String>,
     pub discovery_run_id: Option<String>,
     pub phase: Option<String>,
+    // Advanced metrics (added via migration)
+    pub sortino_ratio: Option<String>,
+    pub max_consecutive_losses: Option<i64>,
+    pub avg_win_pnl: Option<String>,
+    pub avg_loss_pnl: Option<String>,
+    pub total_volume: Option<String>,
+    pub annualized_return_pct: Option<String>,
+    pub annualized_sharpe: Option<String>,
+    pub strategy_confidence: Option<String>,
 }
 
 /// Aggregated stats for the knowledge base
@@ -64,8 +73,10 @@ impl<'a> DiscoveryRepository<'a> {
                 win_rate, total_trades, sharpe_ratio, max_drawdown_pct,
                 profit_factor, avg_trade_pnl,
                 hit_rate, avg_locked_profit,
-                discovery_run_id, phase
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                discovery_run_id, phase,
+                sortino_ratio, max_consecutive_losses, avg_win_pnl, avg_loss_pnl,
+                total_volume, annualized_return_pct, annualized_sharpe, strategy_confidence
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             "#,
         )
         .bind(&record.params_hash)
@@ -89,6 +100,14 @@ impl<'a> DiscoveryRepository<'a> {
         .bind(&record.avg_locked_profit)
         .bind(&record.discovery_run_id)
         .bind(&record.phase)
+        .bind(&record.sortino_ratio)
+        .bind(record.max_consecutive_losses)
+        .bind(&record.avg_win_pnl)
+        .bind(&record.avg_loss_pnl)
+        .bind(&record.total_volume)
+        .bind(&record.annualized_return_pct)
+        .bind(&record.annualized_sharpe)
+        .bind(&record.strategy_confidence)
         .execute(self.pool)
         .await?;
 
@@ -116,7 +135,9 @@ impl<'a> DiscoveryRepository<'a> {
                    win_rate, total_trades, sharpe_ratio, max_drawdown_pct,
                    profit_factor, avg_trade_pnl,
                    hit_rate, avg_locked_profit,
-                   discovery_run_id, phase
+                   discovery_run_id, phase,
+                   sortino_ratio, max_consecutive_losses, avg_win_pnl, avg_loss_pnl,
+                   total_volume, annualized_return_pct, annualized_sharpe, strategy_confidence
             FROM discovery_backtests
             WHERE params_hash = ?
             "#,
@@ -143,7 +164,9 @@ impl<'a> DiscoveryRepository<'a> {
                    win_rate, total_trades, sharpe_ratio, max_drawdown_pct,
                    profit_factor, avg_trade_pnl,
                    hit_rate, avg_locked_profit,
-                   discovery_run_id, phase
+                   discovery_run_id, phase,
+                   sortino_ratio, max_consecutive_losses, avg_win_pnl, avg_loss_pnl,
+                   total_volume, annualized_return_pct, annualized_sharpe, strategy_confidence
             FROM discovery_backtests
             WHERE 1=1
             "#,
@@ -217,6 +240,9 @@ impl<'a> DiscoveryRepository<'a> {
             Some("total_trades") => "total_trades",
             Some("max_drawdown_pct") => "CAST(max_drawdown_pct AS REAL)",
             Some("created_at") => "created_at",
+            Some("strategy_confidence") => "CAST(strategy_confidence AS REAL)",
+            Some("annualized_return_pct") => "CAST(annualized_return_pct AS REAL)",
+            Some("sortino_ratio") => "CAST(sortino_ratio AS REAL)",
             _ => "CAST(composite_score AS REAL)",
         };
 
@@ -228,7 +254,9 @@ impl<'a> DiscoveryRepository<'a> {
                    win_rate, total_trades, sharpe_ratio, max_drawdown_pct,
                    profit_factor, avg_trade_pnl,
                    hit_rate, avg_locked_profit,
-                   discovery_run_id, phase
+                   discovery_run_id, phase,
+                   sortino_ratio, max_consecutive_losses, avg_win_pnl, avg_loss_pnl,
+                   total_volume, annualized_return_pct, annualized_sharpe, strategy_confidence
             FROM discovery_backtests
             WHERE {where_sql}
             ORDER BY {order_col} DESC

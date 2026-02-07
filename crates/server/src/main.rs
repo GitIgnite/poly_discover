@@ -58,7 +58,7 @@ enum Commands {
         #[arg(long, value_delimiter = ',')]
         symbols: Vec<String>,
         /// Number of days of historical data
-        #[arg(long, default_value_t = 90)]
+        #[arg(long, default_value_t = 365)]
         days: u32,
         /// Number of top results to return
         #[arg(long, default_value_t = 10)]
@@ -843,6 +843,14 @@ async fn api_export(
                             "max_drawdown_pct": r.max_drawdown_pct,
                             "profit_factor": r.profit_factor,
                             "total_trades": r.total_trades,
+                            "sortino_ratio": r.sortino_ratio,
+                            "max_consecutive_losses": r.max_consecutive_losses,
+                            "avg_win_pnl": r.avg_win_pnl,
+                            "avg_loss_pnl": r.avg_loss_pnl,
+                            "total_volume": r.total_volume,
+                            "annualized_return_pct": r.annualized_return_pct,
+                            "annualized_sharpe": r.annualized_sharpe,
+                            "strategy_confidence": r.strategy_confidence,
                         },
                         "recommendation": recommendation,
                     })
@@ -907,6 +915,11 @@ fn build_export_json(
                     "max_drawdown_pct": r.max_drawdown_pct,
                     "profit_factor": r.profit_factor,
                     "total_trades": r.total_trades,
+                    "sortino_ratio": r.sortino_ratio,
+                    "max_consecutive_losses": r.max_consecutive_losses,
+                    "annualized_return_pct": r.annualized_return_pct,
+                    "annualized_sharpe": r.annualized_sharpe,
+                    "strategy_confidence": r.strategy_confidence,
                 },
             })
         })

@@ -8,6 +8,14 @@ Poly Discover est un projet de **backtesting de stratégies crypto** fonctionnan
 
 Le système fonctionne en mode **ML-guided continuous discovery** : un seul bouton Start lance un processus infini qui apprend de ses résultats passés pour guider l'exploration de nouvelles stratégies (algorithme évolutionnaire simplifié).
 
+## Règle obligatoire — Mise à jour de CLAUDE.md
+
+**Après chaque modification significative du code** (ajout de feature, refactoring, changement d'architecture, ajout de colonnes DB, modification d'API, etc.), **tu DOIS mettre à jour ce fichier `CLAUDE.md`** pour refléter les changements :
+- Mettre à jour les sections concernées (Architecture, API Endpoints, Testing, Key Design Patterns, etc.)
+- Ajouter une entrée dans **Historique des changements récents** avec la date et le résumé des modifications
+- Mettre à jour les compteurs (nombre de tests, nombre de colonnes DB, etc.)
+- Cette règle est **non négociable** : un changement de code sans mise à jour de CLAUDE.md est considéré incomplet.
+
 ## Documentation de référence
 
 Le dossier `docs/` contient la documentation essentielle du projet. **Consulter ces fichiers avant toute modification significative** :
@@ -32,7 +40,7 @@ cargo build --release                # Release build
 cargo test --all                     # Run all workspace tests (48 tests)
 cargo test -p engine                 # Tests for engine crate only
 cargo run -- serve --port 3001       # Start web server
-cargo run -- run --symbols BTCUSDT   # Run discovery headless (CLI mode)
+cargo run -- run --symbols BTCUSDT   # Run discovery headless (CLI mode, default 365 days)
 cargo run -- run --continuous --symbols BTCUSDT  # Continuous mode CLI
 cargo run -- -v serve --port 3001    # Verbose logging
 ```
@@ -70,7 +78,7 @@ crates/
 - `gabagool.rs` — Binary arbitrage backtest on synthetic Polymarket-style markets
 - `api/binance.rs` — Binance public klines API client
 
-**persistence** has a single table `discovery_backtests` with a `params_hash` (SHA256) uniqueness constraint. WAL mode, 5-connection pool.
+**persistence** has a single table `discovery_backtests` (30 columns) with a `params_hash` (SHA256) uniqueness constraint. WAL mode, 5-connection pool. Migrations are idempotent (ALTER TABLE tolerates "duplicate column name").
 
 **server** exposes REST endpoints and a CLI with two subcommands: `serve` (web server) and `run` (headless discovery).
 
@@ -166,9 +174,13 @@ Le système utilise une estimation dynamique de probabilité basée sur le chang
 - Les résultats sont persistés en DB (SQLite) avec déduplication par hash SHA256
 - Re-fetch des klines toutes les 6h
 
-**Composite Scoring** — Results are ranked by a composite metric combining net PnL, win rate, Sharpe ratio, max drawdown, and profit factor.
+**Composite Scoring** — Results are ranked by a composite metric combining net PnL, win rate, Sharpe ratio, max drawdown, profit factor, strategy confidence (0-300 bonus), Sortino ratio (0-250 bonus), and consecutive loss penalty (-50/-100).
 
 **Dynamic Fee Model** — Fees are calculated using `estimate_poly_probability()` which maps Binance price changes to Polymarket probability estimates, giving more realistic fee calculations than the fixed p=0.50 approach.
+
+**Strategy Confidence (Quartile Analysis)** — Pour les stratégies prometteuses (net_pnl > 0 ET win_rate > 50%), le système découpe les klines en 4 quartiles, exécute le backtest sur chacun, et calcule un score 0-100% basé sur : 50% nombre de quartiles profitables, 30% consistance des win rates (faible écart-type), 20% win rate minimum.
+
+**Advanced Metrics** — Chaque backtest calcule aussi : Sortino ratio (downside risk), max pertes consécutives, avg win/loss PnL, volume total, return annualisé (`(1+r)^(365/days)-1`), Sharpe annualisé (`sharpe × sqrt(365/days)`).
 
 **Sizing Modes** — Three position sizing strategies: `fixed`, `kelly`, `confidence`.
 
@@ -243,7 +255,104 @@ cargo test -p engine -- indicators   # Run indicator tests
 cargo test -p engine -- ml_guided    # Run ML-guided exploration tests
 ```
 
+## Déploiement AWS
+
+### Connexion SSH au serveur
+
+```bash
+ssh -i "E:\developpement\conf\pair de cle aws\ubuntu-poly-bot-key.pem" ubuntu@63.35.188.77
+```
+
+### Infos serveur
+
+| Élément | Valeur |
+|---------|--------|
+| IP publique | `63.35.188.77` |
+| User SSH | `ubuntu` |
+| Clé SSH | `E:\developpement\conf\pair de cle aws\ubuntu-poly-bot-key.pem` |
+| Répertoire app | `~/poly_discover` |
+| Port poly-discover | **4000** |
+| Port poly-bot (autre projet) | **3000** |
+| PM2 service name | `poly-discover` |
+| Base de données | `~/poly_discover/data/discovery.db` |
+
+### CI/CD — GitHub Actions
+
+Le workflow `.github/workflows/build-deploy.yml` se déclenche sur push vers `main` ou `master` (+ dispatch manuel).
+
+**Pipeline :** Build Rust + frontend dans GitHub Actions → SCP archive → Deploy via SSH → PM2 restart sur port 4000.
+
+**Secrets GitHub requis** (Settings → Secrets → Actions) :
+- `AWS_SSH_PRIVATE_KEY` — Contenu complet du fichier `.pem`
+- `AWS_HOST` — `63.35.188.77`
+
+### Commandes utiles sur le serveur
+
+```bash
+# Statut des services
+pm2 status
+
+# Logs poly-discover
+pm2 logs poly-discover --lines 50
+
+# Redémarrer le service
+pm2 restart poly-discover
+
+# Vérifier le port 4000
+ss -tlnp | grep 4000
+
+# Tester l'API
+curl http://localhost:4000/api/health
+
+# Recréer le service manuellement
+pm2 delete poly-discover
+pm2 start ~/poly_discover/poly-discover --name poly-discover -- serve --port 4000 --host 0.0.0.0
+pm2 save
+```
+
+### Security Group AWS
+
+Ports à ouvrir dans le Security Group EC2 :
+
+| Port | Usage |
+|------|-------|
+| 22 | SSH (0.0.0.0/0 pour GitHub Actions) |
+| 80 | Nginx (optionnel) |
+| 3000 | poly-bot (autre projet) |
+| 4000 | poly-discover |
+
 ## Historique des changements récents
+
+### Backtester Avancé — Probabilités, Métriques Annualisées, IHM Enrichie (2026-02-07)
+
+**Nouvelles fonctionnalités :**
+1. Période de backtest étendue à **365 jours** (défaut, au lieu de 90)
+2. **Score de confiance** par stratégie (0-100%) basé sur analyse par quartiles temporels
+3. **Métriques avancées** : Sortino ratio, max pertes consécutives, avg win/loss PnL, volume total, return annualisé, Sharpe annualisé
+4. **Scoring amélioré** avec bonus confiance, bonus Sortino, pénalité séries de pertes
+5. **IHM enrichie** avec badges de confiance colorés (vert/jaune/rouge), nouvelles colonnes dans KnowledgeBase
+
+**Changements backend :**
+- `crates/engine/src/discovery.rs` :
+  - `default_days()` : 90 → 365, `days_variants` : `[30,60,90,180,365]`
+  - `GenericBacktestResult` : +7 champs (sortino, max_consecutive_losses, avg_win/loss, volume, annualized_return, annualized_sharpe)
+  - `DiscoveryResult` : +8 champs (idem + strategy_confidence)
+  - `calculate_sortino()` : nouveau — mean/downside_deviation
+  - `calculate_strategy_confidence()` : nouveau — backtest sur 4 quartiles
+  - `score_result()` : +confidence_bonus, +sortino_bonus, -streak_penalty
+  - `result_to_record()` / `record_to_result()` : mapping des 8 nouveaux champs
+- `crates/persistence/src/schema.rs` : 8 ALTER TABLE migrations (idempotentes)
+- `crates/persistence/src/lib.rs` : `run_migrations()` tolère "duplicate column name"
+- `crates/persistence/src/repository/discovery.rs` : +8 champs Option dans Record, INSERT/SELECT mis à jour, 3 nouveaux tris (confidence, annualized_return, sortino)
+- `crates/server/src/main.rs` : CLI default 365j, export JSON inclut les nouvelles métriques
+
+**Changements frontend :**
+- `src/pages/Discovery.svelte` : default 365j, badges confiance (pill coloré + barre), ann. return, Sortino, max loss streak dans les résultats
+- `src/pages/KnowledgeBase.svelte` : 3 nouvelles colonnes (Confidence avec barre, Ann. Return, Sortino), 3 nouveaux tris
+
+**DB migration** : 8 nouvelles colonnes ajoutées automatiquement (DEFAULT '0'), rétro-compatible avec les anciens records.
+
+---
 
 ### ML Discovery System — UX Refonte + Exploration Guidée (2026-02-07)
 

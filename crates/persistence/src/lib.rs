@@ -74,6 +74,7 @@ impl Database {
 
     /// Run database migrations (execute each statement individually)
     async fn run_migrations(&self) -> DbResult<()> {
+        // Create tables
         for statement in schema::CREATE_TABLES.split(';') {
             // Strip comment-only lines, then check if any SQL remains
             let sql: String = statement
@@ -89,6 +90,21 @@ impl Database {
                 .execute(&self.pool)
                 .await
                 .map_err(|e| DbError::Migration(format!("{e}: {sql}")))?;
+        }
+
+        // Run ALTER TABLE migrations (tolerate "duplicate column name" errors)
+        for migration in schema::MIGRATIONS {
+            match sqlx::query(migration).execute(&self.pool).await {
+                Ok(_) => {}
+                Err(e) => {
+                    let err_msg = e.to_string();
+                    if err_msg.contains("duplicate column name") {
+                        // Column already exists — this is expected on subsequent runs
+                    } else {
+                        return Err(DbError::Migration(format!("{e}: {migration}")));
+                    }
+                }
+            }
         }
 
         Ok(())
