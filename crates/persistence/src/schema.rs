@@ -38,3 +38,15 @@ CREATE INDEX IF NOT EXISTS idx_discovery_strategy ON discovery_backtests(strateg
 CREATE INDEX IF NOT EXISTS idx_discovery_score ON discovery_backtests(composite_score DESC);
 CREATE INDEX IF NOT EXISTS idx_discovery_run ON discovery_backtests(discovery_run_id)
 "#;
+
+/// SQL migrations to add new columns (idempotent — ignores "duplicate column" errors)
+pub const MIGRATIONS: &[&str] = &[
+    "ALTER TABLE discovery_backtests ADD COLUMN sortino_ratio TEXT DEFAULT '0'",
+    "ALTER TABLE discovery_backtests ADD COLUMN max_consecutive_losses INTEGER DEFAULT 0",
+    "ALTER TABLE discovery_backtests ADD COLUMN avg_win_pnl TEXT DEFAULT '0'",
+    "ALTER TABLE discovery_backtests ADD COLUMN avg_loss_pnl TEXT DEFAULT '0'",
+    "ALTER TABLE discovery_backtests ADD COLUMN total_volume TEXT DEFAULT '0'",
+    "ALTER TABLE discovery_backtests ADD COLUMN annualized_return_pct TEXT DEFAULT '0'",
+    "ALTER TABLE discovery_backtests ADD COLUMN annualized_sharpe TEXT DEFAULT '0'",
+    "ALTER TABLE discovery_backtests ADD COLUMN strategy_confidence TEXT DEFAULT '0'",
+];

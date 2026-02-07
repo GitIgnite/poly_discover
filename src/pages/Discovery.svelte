@@ -7,7 +7,7 @@
   // Configuration state
   // ============================================================================
   let discoverSymbols = $state({ BTCUSDT: true, ETHUSDT: true, SOLUSDT: true, XRPUSDT: true });
-  let discoverDays = $state(90);
+  let discoverDays = $state(365);
   let discoverError = $state(null);
 
   // ============================================================================
@@ -67,6 +67,20 @@
     const num = parseFloat(value);
     const sign = num >= 0 ? '+' : '';
     return `${sign}$${num.toFixed(2)}`;
+  }
+
+  function getConfidenceColor(conf) {
+    const v = parseFloat(conf || 0);
+    if (v >= 70) return { bg: 'bg-green-500', text: 'text-green-400', border: 'border-green-600/50', label: 'HIGH' };
+    if (v >= 40) return { bg: 'bg-yellow-500', text: 'text-yellow-400', border: 'border-yellow-600/50', label: 'MED' };
+    return { bg: 'bg-red-500', text: 'text-red-400', border: 'border-red-600/50', label: 'LOW' };
+  }
+
+  function formatAnnReturn(value) {
+    const num = parseFloat(value || 0);
+    if (Math.abs(num) < 0.01) return '0.0%/yr';
+    const sign = num >= 0 ? '+' : '';
+    return `${sign}${num.toFixed(1)}%/yr`;
   }
 
   // ============================================================================
@@ -244,6 +258,7 @@
 
       <div class="grid grid-cols-1 md:grid-cols-2 gap-4">
         {#each $discoveryStatus.results.slice(0, 10) as r}
+          {@const conf = getConfidenceColor(r.strategy_confidence)}
           <div class="bg-gray-700/50 border rounded-lg p-4 {r.rank <= 3 ? 'border-cyan-600/50' : 'border-gray-600/30'}">
             <!-- Header -->
             <div class="flex items-center justify-between mb-3">
@@ -252,10 +267,25 @@
                 <span class="font-semibold {getStrategyColor(r.strategy_name)}">{r.strategy_name}</span>
               </div>
               <div class="flex items-center gap-2">
+                {#if parseFloat(r.strategy_confidence || 0) > 0}
+                  <div class="flex items-center gap-1 px-2 py-0.5 rounded-full border {conf.border} bg-gray-800/80">
+                    <div class="w-1.5 h-1.5 rounded-full {conf.bg}"></div>
+                    <span class="text-xs font-semibold {conf.text}">{parseFloat(r.strategy_confidence).toFixed(0)}%</span>
+                  </div>
+                {/if}
                 <span class="text-xs bg-gray-600 text-gray-300 px-2 py-0.5 rounded">{r.symbol.replace('USDT', '')}</span>
                 <span class="text-xs text-gray-500">Score: {parseFloat(r.composite_score).toFixed(0)}</span>
               </div>
             </div>
+
+            <!-- Confidence bar -->
+            {#if parseFloat(r.strategy_confidence || 0) > 0}
+              <div class="mb-3">
+                <div class="w-full bg-gray-800 rounded-full h-1.5">
+                  <div class="h-1.5 rounded-full {conf.bg} transition-all" style="width: {Math.min(parseFloat(r.strategy_confidence), 100)}%"></div>
+                </div>
+              </div>
+            {/if}
 
             <!-- Parameters -->
             <div class="text-xs text-gray-400 bg-gray-800/50 px-3 py-1.5 rounded mb-3 font-mono">
@@ -270,6 +300,9 @@
               <div><span class="text-gray-400">Sharpe:</span> <span class="text-white">{parseFloat(r.sharpe_ratio).toFixed(2)}</span></div>
               <div><span class="text-gray-400">Drawdown:</span> <span class="text-red-400">{parseFloat(r.max_drawdown_pct).toFixed(1)}%</span></div>
               <div><span class="text-gray-400">PF:</span> <span class="{parseFloat(r.profit_factor) >= 1 ? 'text-green-400' : 'text-red-400'}">{parseFloat(r.profit_factor).toFixed(2)}</span></div>
+              <div><span class="text-gray-400">Ann. Return:</span> <span class="{parseFloat(r.annualized_return_pct || 0) >= 0 ? 'text-green-400' : 'text-red-400'}">{formatAnnReturn(r.annualized_return_pct)}</span></div>
+              <div><span class="text-gray-400">Sortino:</span> <span class="text-white">{parseFloat(r.sortino_ratio || 0).toFixed(2)}</span></div>
+              <div><span class="text-gray-400">Max Loss Streak:</span> <span class="{(r.max_consecutive_losses || 0) > 7 ? 'text-red-400' : 'text-gray-300'}">{r.max_consecutive_losses || 0}</span></div>
             </div>
 
             {#if r.hit_rate != null}

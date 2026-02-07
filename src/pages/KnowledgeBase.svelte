@@ -221,6 +221,9 @@
           <option value="win_rate">Win Rate</option>
           <option value="sharpe_ratio">Sharpe</option>
           <option value="total_trades">Trades</option>
+          <option value="strategy_confidence">Confidence</option>
+          <option value="annualized_return_pct">Ann. Return</option>
+          <option value="sortino_ratio">Sortino</option>
           <option value="created_at">Date</option>
         </select>
       </div>
@@ -254,10 +257,13 @@
               <th class="px-3 py-2 text-left">#</th>
               <th class="px-3 py-2 text-left">Strategy</th>
               <th class="px-3 py-2 text-left">Symbol</th>
+              <th class="px-3 py-2 text-right">Conf.</th>
               <th class="px-3 py-2 text-right">Score</th>
               <th class="px-3 py-2 text-right">Net PnL</th>
               <th class="px-3 py-2 text-right">Win Rate</th>
+              <th class="px-3 py-2 text-right">Ann. Ret.</th>
               <th class="px-3 py-2 text-right">Sharpe</th>
+              <th class="px-3 py-2 text-right">Sortino</th>
               <th class="px-3 py-2 text-right">Drawdown</th>
               <th class="px-3 py-2 text-right">Trades</th>
               <th class="px-3 py-2 text-left">Params</th>
@@ -265,14 +271,31 @@
           </thead>
           <tbody>
             {#each kbData as row, i}
+              {@const confVal = parseFloat(row.strategy_confidence || 0)}
+              {@const confColor = confVal >= 70 ? 'text-green-400' : confVal >= 40 ? 'text-yellow-400' : confVal > 0 ? 'text-red-400' : 'text-gray-600'}
+              {@const confBg = confVal >= 70 ? 'bg-green-500' : confVal >= 40 ? 'bg-yellow-500' : 'bg-red-500'}
               <tr class="border-b border-gray-700/50 hover:bg-gray-700/30">
                 <td class="px-3 py-2 text-gray-500">{kbPage * kbPageSize + i + 1}</td>
                 <td class="px-3 py-2 font-medium {getStrategyColor(row.strategy_name)}">{row.strategy_name}</td>
                 <td class="px-3 py-2 text-gray-300">{row.symbol}</td>
+                <td class="px-3 py-2 text-right">
+                  {#if confVal > 0}
+                    <div class="flex items-center justify-end gap-1">
+                      <div class="w-8 bg-gray-700 rounded-full h-1.5">
+                        <div class="{confBg} h-1.5 rounded-full" style="width: {confVal}%"></div>
+                      </div>
+                      <span class="font-mono text-xs {confColor}">{confVal.toFixed(0)}%</span>
+                    </div>
+                  {:else}
+                    <span class="text-gray-600 text-xs">-</span>
+                  {/if}
+                </td>
                 <td class="px-3 py-2 text-right text-white font-mono">{parseFloat(row.composite_score).toFixed(1)}</td>
                 <td class="px-3 py-2 text-right font-mono {parseFloat(row.net_pnl) >= 0 ? 'text-green-400' : 'text-red-400'}">{parseFloat(row.net_pnl).toFixed(2)}</td>
                 <td class="px-3 py-2 text-right font-mono {parseFloat(row.win_rate) >= 60 ? 'text-yellow-400' : 'text-gray-300'}">{parseFloat(row.win_rate).toFixed(1)}%</td>
+                <td class="px-3 py-2 text-right font-mono {parseFloat(row.annualized_return_pct || 0) >= 0 ? 'text-green-400' : 'text-red-400'}">{parseFloat(row.annualized_return_pct || 0).toFixed(1)}%</td>
                 <td class="px-3 py-2 text-right font-mono text-gray-300">{parseFloat(row.sharpe_ratio).toFixed(2)}</td>
+                <td class="px-3 py-2 text-right font-mono text-gray-300">{parseFloat(row.sortino_ratio || 0).toFixed(2)}</td>
                 <td class="px-3 py-2 text-right font-mono text-red-400">{parseFloat(row.max_drawdown_pct).toFixed(1)}%</td>
                 <td class="px-3 py-2 text-right text-gray-300">{row.total_trades}</td>
                 <td class="px-3 py-2 text-xs text-gray-500 max-w-xs truncate" title={row.strategy_params}>{row.strategy_params}</td>

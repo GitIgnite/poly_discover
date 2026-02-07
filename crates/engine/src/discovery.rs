@@ -227,7 +227,7 @@ pub struct DiscoveryRequest {
 }
 
 fn default_days() -> u32 {
-    90
+    365
 }
 
 /// A single scored discovery result
@@ -248,6 +248,15 @@ pub struct DiscoveryResult {
     pub max_drawdown_pct: Decimal,
     pub profit_factor: Decimal,
     pub avg_trade_pnl: Decimal,
+    // Advanced metrics
+    pub sortino_ratio: Decimal,
+    pub max_consecutive_losses: u32,
+    pub avg_win_pnl: Decimal,
+    pub avg_loss_pnl: Decimal,
+    pub total_volume: Decimal,
+    pub annualized_return_pct: Decimal,
+    pub annualized_sharpe: Decimal,
+    pub strategy_confidence: Decimal,
     // Gabagool-specific
     pub hit_rate: Option<Decimal>,
     pub avg_locked_profit: Option<Decimal>,
@@ -708,6 +717,13 @@ struct GenericBacktestResult {
     max_drawdown_pct: Decimal,
     profit_factor: Decimal,
     avg_trade_pnl: Decimal,
+    sortino_ratio: Decimal,
+    max_consecutive_losses: u32,
+    avg_win_pnl: Decimal,
+    avg_loss_pnl: Decimal,
+    total_volume: Decimal,
+    annualized_return_pct: Decimal,
+    annualized_sharpe: Decimal,
 }
 
 struct OpenPosition {
@@ -944,6 +960,78 @@ fn run_generic_backtest(
         Decimal::ZERO
     };
 
+    // --- Advanced metrics ---
+
+    // Sortino ratio: mean(returns) / std_dev(negative_returns_only)
+    let sortino_ratio = calculate_sortino(&trades);
+
+    // Max consecutive losses
+    let max_consecutive_losses = {
+        let mut max_streak = 0u32;
+        let mut current_streak = 0u32;
+        for trade in &trades {
+            if trade.pnl < Decimal::ZERO {
+                current_streak += 1;
+                if current_streak > max_streak {
+                    max_streak = current_streak;
+                }
+            } else {
+                current_streak = 0;
+            }
+        }
+        max_streak
+    };
+
+    // Average win/loss PnL
+    let avg_win_pnl = if winning_trades > 0 {
+        gross_profits / Decimal::from(winning_trades)
+    } else {
+        Decimal::ZERO
+    };
+    let avg_loss_pnl = if losing_trades > 0 {
+        gross_losses / Decimal::from(losing_trades)
+    } else {
+        Decimal::ZERO
+    };
+
+    // Total volume
+    let total_volume: Decimal = trades
+        .iter()
+        .map(|t| t.size * t.entry_price)
+        .sum();
+
+    // Annualized return: ((1 + total_return)^(365/period_days) - 1) * 100
+    let annualized_return_pct = {
+        let period_bars = klines.len() as f64;
+        let period_days = period_bars / 96.0; // 96 bars per day (15min)
+        if period_days > 0.0 && initial_capital > Decimal::ZERO {
+            let total_return_f: f64 = (total_pnl / initial_capital)
+                .to_string()
+                .parse()
+                .unwrap_or(0.0);
+            let annual_factor = 365.0 / period_days;
+            let annualized = ((1.0 + total_return_f).powf(annual_factor) - 1.0) * 100.0;
+            // Clamp to reasonable bounds
+            let clamped = annualized.clamp(-999.99, 99999.99);
+            Decimal::from_str_exact(&format!("{:.2}", clamped)).unwrap_or(Decimal::ZERO)
+        } else {
+            Decimal::ZERO
+        }
+    };
+
+    // Annualized Sharpe: sharpe * sqrt(365 / period_days)
+    let annualized_sharpe = {
+        let period_bars = klines.len() as f64;
+        let period_days = period_bars / 96.0;
+        if period_days > 0.0 {
+            let sharpe_f: f64 = sharpe_ratio.to_string().parse().unwrap_or(0.0);
+            let ann_sharpe = sharpe_f * (365.0 / period_days).sqrt();
+            Decimal::from_str_exact(&format!("{:.2}", ann_sharpe)).unwrap_or(Decimal::ZERO)
+        } else {
+            Decimal::ZERO
+        }
+    };
+
     GenericBacktestResult {
         total_pnl,
         total_fees,
@@ -955,6 +1043,13 @@ fn run_generic_backtest(
         max_drawdown_pct,
         profit_factor,
         avg_trade_pnl,
+        sortino_ratio,
+        max_consecutive_losses,
+        avg_win_pnl,
+        avg_loss_pnl,
+        total_volume,
+        annualized_return_pct,
+        annualized_sharpe,
     }
 }
 
@@ -979,6 +1074,42 @@ fn calculate_sharpe(trades: &[BacktestTrade]) -> Decimal {
 
     let sharpe = mean / std_dev;
     Decimal::from_str_exact(&format!("{:.2}", sharpe)).unwrap_or(Decimal::ZERO)
+}
+
+fn calculate_sortino(trades: &[BacktestTrade]) -> Decimal {
+    if trades.len() < 2 {
+        return Decimal::ZERO;
+    }
+
+    let returns: Vec<f64> = trades
+        .iter()
+        .map(|t| t.pnl_pct.to_string().parse::<f64>().unwrap_or(0.0))
+        .collect();
+
+    let n = returns.len() as f64;
+    let mean = returns.iter().sum::<f64>() / n;
+
+    // Downside deviation: std_dev of negative returns only
+    let negative_returns: Vec<f64> = returns.iter().filter(|&&r| r < 0.0).copied().collect();
+    if negative_returns.is_empty() {
+        // No negative returns — perfect Sortino
+        return if mean > 0.0 {
+            Decimal::from_str_exact(&format!("{:.2}", mean * 10.0)).unwrap_or(dec!(99))
+        } else {
+            Decimal::ZERO
+        };
+    }
+
+    let neg_n = negative_returns.len() as f64;
+    let neg_variance = negative_returns.iter().map(|r| r.powi(2)).sum::<f64>() / neg_n;
+    let downside_dev = neg_variance.sqrt();
+
+    if downside_dev < 1e-10 {
+        return Decimal::ZERO;
+    }
+
+    let sortino = mean / downside_dev;
+    Decimal::from_str_exact(&format!("{:.2}", sortino)).unwrap_or(Decimal::ZERO)
 }
 
 // ============================================================================
@@ -1023,7 +1154,24 @@ fn score_result(result: &DiscoveryResult, initial_capital: Decimal) -> Decimal {
             Decimal::ZERO
         };
 
+    // Confidence bonus (0-100 → 0-300 bonus)
+    let confidence_bonus = result.strategy_confidence * dec!(3);
+
+    // Sortino bonus (rewards downside risk management)
+    let sortino_capped = result.sortino_ratio.min(dec!(5));
+    let sortino_bonus = sortino_capped * dec!(50);
+
+    // Consecutive losses penalty
+    let streak_penalty = if result.max_consecutive_losses > 10 {
+        dec!(100)
+    } else if result.max_consecutive_losses > 7 {
+        dec!(50)
+    } else {
+        Decimal::ZERO
+    };
+
     net_pnl + win_rate_bonus + sharpe_bonus - drawdown_penalty + pf_bonus + explosive_bonus
+        + confidence_bonus + sortino_bonus - streak_penalty
 }
 
 // ============================================================================
@@ -1300,6 +1448,14 @@ fn result_to_record(
         avg_locked_profit: result.avg_locked_profit.map(|d| d.to_string()),
         discovery_run_id: Some(run_id.to_string()),
         phase: Some(phase.to_string()),
+        sortino_ratio: Some(result.sortino_ratio.to_string()),
+        max_consecutive_losses: Some(result.max_consecutive_losses as i64),
+        avg_win_pnl: Some(result.avg_win_pnl.to_string()),
+        avg_loss_pnl: Some(result.avg_loss_pnl.to_string()),
+        total_volume: Some(result.total_volume.to_string()),
+        annualized_return_pct: Some(result.annualized_return_pct.to_string()),
+        annualized_sharpe: Some(result.annualized_sharpe.to_string()),
+        strategy_confidence: Some(result.strategy_confidence.to_string()),
     }
 }
 
@@ -1336,6 +1492,14 @@ fn record_to_result(record: DiscoveryBacktestRecord) -> DiscoveryResult {
         max_drawdown_pct: parse_dec(&record.max_drawdown_pct),
         profit_factor: parse_dec(&record.profit_factor),
         avg_trade_pnl: parse_dec(&record.avg_trade_pnl),
+        sortino_ratio: record.sortino_ratio.as_deref().map(parse_dec).unwrap_or(Decimal::ZERO),
+        max_consecutive_losses: record.max_consecutive_losses.unwrap_or(0) as u32,
+        avg_win_pnl: record.avg_win_pnl.as_deref().map(parse_dec).unwrap_or(Decimal::ZERO),
+        avg_loss_pnl: record.avg_loss_pnl.as_deref().map(parse_dec).unwrap_or(Decimal::ZERO),
+        total_volume: record.total_volume.as_deref().map(parse_dec).unwrap_or(Decimal::ZERO),
+        annualized_return_pct: record.annualized_return_pct.as_deref().map(parse_dec).unwrap_or(Decimal::ZERO),
+        annualized_sharpe: record.annualized_sharpe.as_deref().map(parse_dec).unwrap_or(Decimal::ZERO),
+        strategy_confidence: record.strategy_confidence.as_deref().map(parse_dec).unwrap_or(Decimal::ZERO),
         hit_rate: record.hit_rate.as_deref().map(parse_dec),
         avg_locked_profit: record.avg_locked_profit.as_deref().map(parse_dec),
     }
@@ -1657,6 +1821,80 @@ fn run_single_backtest(
     }
 }
 
+/// Calculate strategy confidence by running backtests on 4 quartiles of the data.
+/// Returns a score from 0 to 100 based on consistency across time periods.
+fn calculate_strategy_confidence(
+    strategy_type: &DiscoveryStrategyType,
+    klines: &[Kline],
+    initial_capital: Decimal,
+    base_position_pct: Decimal,
+    sizing_mode: SizingMode,
+    fee_config: &PolymarketFeeConfig,
+) -> Decimal {
+    if klines.len() < 200 {
+        // Not enough data for meaningful quartile analysis
+        return Decimal::ZERO;
+    }
+
+    let quarter = klines.len() / 4;
+    let quartiles = [
+        &klines[..quarter],
+        &klines[quarter..quarter * 2],
+        &klines[quarter * 2..quarter * 3],
+        &klines[quarter * 3..],
+    ];
+
+    let mut win_rates = Vec::new();
+    let mut profitable_count = 0u32;
+
+    for q_klines in &quartiles {
+        let mut gen = build_signal_generator(strategy_type);
+        let bt = run_generic_backtest(
+            gen.as_mut(),
+            q_klines,
+            initial_capital,
+            base_position_pct,
+            sizing_mode,
+            fee_config,
+        );
+        if bt.total_pnl > Decimal::ZERO {
+            profitable_count += 1;
+        }
+        let wr_f: f64 = bt.win_rate.to_string().parse().unwrap_or(0.0);
+        win_rates.push(wr_f);
+    }
+
+    // 50% weight: number of profitable quartiles (0/4 to 4/4)
+    let profitability_score = (profitable_count as f64 / 4.0) * 50.0;
+
+    // 30% weight: consistency of win rates (low std_dev = high confidence)
+    let consistency_score = if win_rates.len() >= 2 {
+        let mean_wr = win_rates.iter().sum::<f64>() / win_rates.len() as f64;
+        let variance = win_rates
+            .iter()
+            .map(|wr| (wr - mean_wr).powi(2))
+            .sum::<f64>()
+            / (win_rates.len() - 1) as f64;
+        let std_dev = variance.sqrt();
+        // Lower std_dev = higher consistency. Map 0-20 std_dev to 30-0 score
+        (1.0 - (std_dev / 20.0).min(1.0)) * 30.0
+    } else {
+        0.0
+    };
+
+    // 20% weight: minimum win rate across quartiles
+    let min_wr = win_rates.iter().cloned().fold(f64::MAX, f64::min);
+    let min_wr_score = if min_wr > 50.0 {
+        ((min_wr - 50.0) / 30.0).min(1.0) * 20.0
+    } else {
+        0.0
+    };
+
+    let total = profitability_score + consistency_score + min_wr_score;
+    Decimal::from_str_exact(&format!("{:.1}", total.clamp(0.0, 100.0)))
+        .unwrap_or(Decimal::ZERO)
+}
+
 fn run_indicator_backtest_for_discovery(
     strategy_type: &DiscoveryStrategyType,
     klines: &[Kline],
@@ -1677,13 +1915,27 @@ fn run_indicator_backtest_for_discovery(
         fee_config,
     );
 
+    // Calculate confidence only for promising strategies (net_pnl > 0 AND win_rate > 50)
+    let strategy_confidence = if bt.total_pnl > Decimal::ZERO && bt.win_rate > dec!(50) {
+        calculate_strategy_confidence(
+            strategy_type,
+            klines,
+            initial_capital,
+            base_position_pct,
+            sizing_mode,
+            fee_config,
+        )
+    } else {
+        Decimal::ZERO
+    };
+
     DiscoveryResult {
         rank: 0,
         strategy_type: strategy_type.clone(),
         strategy_name: strategy_type.name().to_string(),
         symbol: symbol.to_string(),
         sizing_mode,
-        composite_score: Decimal::ZERO, // Will be computed in scoring
+        composite_score: Decimal::ZERO,
         net_pnl: bt.total_pnl,
         gross_pnl: bt.total_pnl + bt.total_fees,
         total_fees: bt.total_fees,
@@ -1693,6 +1945,14 @@ fn run_indicator_backtest_for_discovery(
         max_drawdown_pct: bt.max_drawdown_pct,
         profit_factor: bt.profit_factor,
         avg_trade_pnl: bt.avg_trade_pnl,
+        sortino_ratio: bt.sortino_ratio,
+        max_consecutive_losses: bt.max_consecutive_losses,
+        avg_win_pnl: bt.avg_win_pnl,
+        avg_loss_pnl: bt.avg_loss_pnl,
+        total_volume: bt.total_volume,
+        annualized_return_pct: bt.annualized_return_pct,
+        annualized_sharpe: bt.annualized_sharpe,
+        strategy_confidence,
         hit_rate: None,
         avg_locked_profit: None,
     }
@@ -1756,6 +2016,14 @@ fn run_gabagool_backtest_for_discovery(
             dec!(999.99)
         },
         avg_trade_pnl: result.avg_locked_profit,
+        sortino_ratio: Decimal::ZERO,
+        max_consecutive_losses: 0,
+        avg_win_pnl: Decimal::ZERO,
+        avg_loss_pnl: Decimal::ZERO,
+        total_volume: Decimal::ZERO,
+        annualized_return_pct: Decimal::ZERO,
+        annualized_sharpe: Decimal::ZERO,
+        strategy_confidence: Decimal::ZERO,
         hit_rate: Some(result.hit_rate),
         avg_locked_profit: Some(result.avg_locked_profit),
     }
@@ -2941,7 +3209,7 @@ pub async fn run_continuous_discovery(
     // Multi-sizing modes to test across cycles
     let sizing_modes = [SizingMode::Fixed, SizingMode::Kelly, SizingMode::ConfidenceWeighted];
     // Multi-days periods to test
-    let days_variants: Vec<u32> = vec![30, 60, 90, 120, 180];
+    let days_variants: Vec<u32> = vec![30, 60, 90, 180, 365];
 
     progress.is_continuous.store(true, Ordering::Relaxed);
 
@@ -3477,6 +3745,14 @@ mod tests {
             max_drawdown_pct: dec!(5),
             profit_factor: dec!(3),
             avg_trade_pnl: dec!(333),
+            sortino_ratio: Decimal::ZERO,
+            max_consecutive_losses: 0,
+            avg_win_pnl: Decimal::ZERO,
+            avg_loss_pnl: Decimal::ZERO,
+            total_volume: Decimal::ZERO,
+            annualized_return_pct: Decimal::ZERO,
+            annualized_sharpe: Decimal::ZERO,
+            strategy_confidence: Decimal::ZERO,
             hit_rate: None,
             avg_locked_profit: None,
         };
@@ -3507,6 +3783,14 @@ mod tests {
             max_drawdown_pct: dec!(3),
             profit_factor: dec!(2.5),
             avg_trade_pnl: dec!(25),
+            sortino_ratio: Decimal::ZERO,
+            max_consecutive_losses: 0,
+            avg_win_pnl: Decimal::ZERO,
+            avg_loss_pnl: Decimal::ZERO,
+            total_volume: Decimal::ZERO,
+            annualized_return_pct: Decimal::ZERO,
+            annualized_sharpe: Decimal::ZERO,
+            strategy_confidence: Decimal::ZERO,
             hit_rate: None,
             avg_locked_profit: None,
         };
@@ -3645,6 +3929,14 @@ mod tests {
                 max_drawdown_pct: dec!(5),
                 profit_factor: dec!(2),
                 avg_trade_pnl: dec!(5),
+                sortino_ratio: Decimal::ZERO,
+                max_consecutive_losses: 0,
+                avg_win_pnl: Decimal::ZERO,
+                avg_loss_pnl: Decimal::ZERO,
+                total_volume: Decimal::ZERO,
+                annualized_return_pct: Decimal::ZERO,
+                annualized_sharpe: Decimal::ZERO,
+                strategy_confidence: Decimal::ZERO,
                 hit_rate: None,
                 avg_locked_profit: None,
             },
@@ -3667,6 +3959,14 @@ mod tests {
                 max_drawdown_pct: dec!(8),
                 profit_factor: dec!(1.8),
                 avg_trade_pnl: dec!(5.3),
+                sortino_ratio: Decimal::ZERO,
+                max_consecutive_losses: 0,
+                avg_win_pnl: Decimal::ZERO,
+                avg_loss_pnl: Decimal::ZERO,
+                total_volume: Decimal::ZERO,
+                annualized_return_pct: Decimal::ZERO,
+                annualized_sharpe: Decimal::ZERO,
+                strategy_confidence: Decimal::ZERO,
                 hit_rate: None,
                 avg_locked_profit: None,
             },
@@ -3700,6 +4000,14 @@ mod tests {
             max_drawdown_pct: dec!(5),
             profit_factor: dec!(2),
             avg_trade_pnl: dec!(5),
+            sortino_ratio: Decimal::ZERO,
+            max_consecutive_losses: 0,
+            avg_win_pnl: Decimal::ZERO,
+            avg_loss_pnl: Decimal::ZERO,
+            total_volume: Decimal::ZERO,
+            annualized_return_pct: Decimal::ZERO,
+            annualized_sharpe: Decimal::ZERO,
+            strategy_confidence: Decimal::ZERO,
             hit_rate: None,
             avg_locked_profit: None,
         }];
