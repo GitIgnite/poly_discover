@@ -174,6 +174,7 @@ async fn cmd_serve(host: &str, port: u16) -> anyhow::Result<()> {
         .route("/discover/status", get(api_discovery_status))
         .route("/discover/cancel", post(api_cancel_discovery))
         .route("/knowledge", get(api_knowledge_base))
+        .route("/knowledge/top-strategies", get(api_top_strategies))
         .route("/knowledge/stats", get(api_knowledge_stats))
         .route("/export", get(api_export))
         .route("/optimize", post(api_start_optimization))
@@ -196,6 +197,7 @@ async fn cmd_serve(host: &str, port: u16) -> anyhow::Result<()> {
     println!("  GET  /api/discover/status     - Poll discovery progress");
     println!("  POST /api/discover/cancel     - Cancel running discovery");
     println!("  GET  /api/knowledge           - Knowledge base (paginated)");
+    println!("  GET  /api/knowledge/top-strategies - Top unique strategies");
     println!("  GET  /api/knowledge/stats     - Knowledge base stats");
     println!("  GET  /api/export              - Export results as JSON");
     println!("  POST /api/optimize            - Start parameter optimization");
@@ -631,6 +633,32 @@ async fn api_knowledge_stats(State(state): State<AppState>) -> Json<serde_json::
         Err(e) => Json(serde_json::json!({
             "success": false,
             "error": format!("Failed to get knowledge base stats: {}", e),
+        })),
+    }
+}
+
+/// GET /api/knowledge/top-strategies — top unique strategies (deduplicated by strategy_name)
+async fn api_top_strategies(
+    State(state): State<AppState>,
+    Query(params): Query<HashMap<String, String>>,
+) -> Json<serde_json::Value> {
+    let limit: i64 = params
+        .get("limit")
+        .and_then(|s| s.parse().ok())
+        .unwrap_or(20);
+
+    let repo = DiscoveryRepository::new(state.db.pool());
+    match repo.get_top_unique_strategies(limit).await {
+        Ok(records) => Json(serde_json::json!({
+            "success": true,
+            "data": records,
+            "total": records.len(),
+        })),
+        Err(e) => Json(serde_json::json!({
+            "success": false,
+            "error": format!("Failed to query top strategies: {}", e),
+            "data": [],
+            "total": 0,
         })),
     }
 }

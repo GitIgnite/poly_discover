@@ -4,6 +4,7 @@
   import Discovery from './pages/Discovery.svelte';
   import KnowledgeBase from './pages/KnowledgeBase.svelte';
   import Optimizer from './pages/Optimizer.svelte';
+  import TopStrategies from './pages/TopStrategies.svelte';
   import { currentPage, serverHealth, discoveryStatus } from './lib/stores.js';
   import { checkHealth, getDiscoveryStatus } from './lib/api.js';
 
@@ -53,6 +54,8 @@
     <Discovery />
   {:else if $currentPage === 'knowledge'}
     <KnowledgeBase />
+  {:else if $currentPage === 'top-strategies'}
+    <TopStrategies />
   {:else if $currentPage === 'optimizer'}
     <Optimizer />
   {/if}

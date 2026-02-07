@@ -274,6 +274,40 @@ impl<'a> DiscoveryRepository<'a> {
         Ok((records, total))
     }
 
+    /// Get top unique strategies (one per strategy_name, best win rate), deduplicated
+    pub async fn get_top_unique_strategies(
+        &self,
+        limit: i64,
+    ) -> DbResult<Vec<DiscoveryBacktestRecord>> {
+        let records = sqlx::query_as::<_, DiscoveryBacktestRecord>(
+            r#"
+            WITH ranked AS (
+              SELECT *,
+                ROW_NUMBER() OVER (PARTITION BY strategy_name ORDER BY CAST(win_rate AS REAL) DESC) as rn
+              FROM discovery_backtests
+              WHERE total_trades >= 5
+            )
+            SELECT id, params_hash, strategy_type, strategy_name, strategy_params,
+                   symbol, days, sizing_mode,
+                   composite_score, net_pnl, gross_pnl, total_fees,
+                   win_rate, total_trades, sharpe_ratio, max_drawdown_pct,
+                   profit_factor, avg_trade_pnl,
+                   hit_rate, avg_locked_profit,
+                   discovery_run_id, phase,
+                   sortino_ratio, max_consecutive_losses, avg_win_pnl, avg_loss_pnl,
+                   total_volume, annualized_return_pct, annualized_sharpe, strategy_confidence
+            FROM ranked WHERE rn = 1
+            ORDER BY CAST(win_rate AS REAL) DESC
+            LIMIT ?
+            "#,
+        )
+        .bind(limit)
+        .fetch_all(self.pool)
+        .await?;
+
+        Ok(records)
+    }
+
     /// Get aggregated knowledge base stats
     pub async fn get_stats(&self) -> DbResult<KnowledgeBaseStats> {
         let total: (i64,) = sqlx::query_as("SELECT COUNT(*) FROM discovery_backtests")
