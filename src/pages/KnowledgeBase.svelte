@@ -1,5 +1,7 @@
 <script>
+  import { onDestroy } from 'svelte';
   import { getKnowledgeBase, getKnowledgeStats, exportResults } from '../lib/api.js';
+  import { discoveryStatus } from '../lib/stores.js';
   import { Database, Download, Loader2 } from 'lucide-svelte';
 
   // ============================================================================
@@ -15,6 +17,9 @@
   let kbFilterSymbol = $state('');
   let kbFilterMinWR = $state('');
   let kbSortBy = $state('composite_score');
+
+  // Auto-refresh interval
+  let autoRefreshInterval = $state(null);
 
   // ============================================================================
   // Data loading
@@ -44,6 +49,27 @@
     }
     kbLoading = false;
   }
+
+  // ============================================================================
+  // Auto-refresh when discovery is running
+  // ============================================================================
+  const unsubscribe = discoveryStatus.subscribe(status => {
+    if (status.running && !autoRefreshInterval) {
+      autoRefreshInterval = setInterval(loadKnowledgeBase, 5000);
+    } else if (!status.running && autoRefreshInterval) {
+      clearInterval(autoRefreshInterval);
+      autoRefreshInterval = null;
+      // One final refresh when discovery stops
+      loadKnowledgeBase();
+    }
+  });
+
+  onDestroy(() => {
+    unsubscribe();
+    if (autoRefreshInterval) {
+      clearInterval(autoRefreshInterval);
+    }
+  });
 
   // ============================================================================
   // Pagination
@@ -86,6 +112,10 @@
       'Stochastic': 'text-yellow-400',
       'ATR Mean Reversion': 'text-pink-400',
       'Gabagool': 'text-orange-400',
+      'VWAP': 'text-teal-400',
+      'OBV': 'text-lime-400',
+      'Williams': 'text-rose-400',
+      'ADX': 'text-indigo-400',
     };
     for (const [key, color] of Object.entries(colors)) {
       if (name.includes(key) || name.includes(key.split(' ')[0])) return color;
@@ -107,6 +137,12 @@
       <h2 class="text-2xl font-bold text-white">Knowledge Base</h2>
       <p class="text-sm text-gray-400">Persisted discovery backtest results with filtering and sorting</p>
     </div>
+    {#if $discoveryStatus.running}
+      <div class="ml-auto flex items-center gap-2 px-3 py-1 bg-cyan-900/40 border border-cyan-700/50 rounded-full">
+        <div class="w-2 h-2 rounded-full bg-cyan-400 animate-pulse"></div>
+        <span class="text-xs text-cyan-400 font-semibold uppercase tracking-wider">LIVE</span>
+      </div>
+    {/if}
   </div>
 
   <!-- Stats Header -->
@@ -145,6 +181,10 @@
           <option value="ema_crossover">EMA Cross</option>
           <option value="stochastic">Stochastic</option>
           <option value="atr_mean_reversion">ATR MeanRev</option>
+          <option value="vwap">VWAP</option>
+          <option value="obv">OBV</option>
+          <option value="williams_r">Williams %R</option>
+          <option value="adx">ADX</option>
           <option value="rsi_bollinger">RSI+BB</option>
           <option value="macd_rsi">MACD+RSI</option>
           <option value="ema_rsi">EMA+RSI</option>
@@ -152,6 +192,10 @@
           <option value="macd_bollinger">MACD+BB</option>
           <option value="triple_rsi_macd_bb">Triple RSI+MACD+BB</option>
           <option value="triple_ema_rsi_stoch">Triple EMA+RSI+Stoch</option>
+          <option value="vwap_rsi">VWAP+RSI</option>
+          <option value="obv_macd">OBV+MACD</option>
+          <option value="adx_ema">ADX+EMA</option>
+          <option value="williams_r_stoch">Williams%R+Stoch</option>
           <option value="gabagool">Gabagool</option>
         </select>
       </div>

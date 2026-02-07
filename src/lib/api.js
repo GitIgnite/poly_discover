@@ -51,8 +51,16 @@ export async function startDiscovery(config) {
   try {
     return await apiCall('/api/discover', {
       method: 'POST',
-      body: JSON.stringify(config),
+      body: JSON.stringify({ ...config, continuous: true }),
     });
+  } catch (e) {
+    return { success: false, message: String(e) };
+  }
+}
+
+export async function cancelDiscovery() {
+  try {
+    return await apiCall('/api/discover/cancel', { method: 'POST' });
   } catch (e) {
     return { success: false, message: String(e) };
   }

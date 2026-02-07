@@ -1,0 +1,133 @@
+name: Build and Deploy to AWS
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+env:
+  APP_PORT: 8080
+  APP_DIR: /home/ubuntu/poly_discover
+  PM2_APP_NAME: poly-discover
+
+jobs:
+  deploy:
+    name: Deploy to AWS EC2
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Validate secrets
+        run: |
+          if [ -z "${{ secrets.AWS_SSH_PRIVATE_KEY }}" ]; then
+            echo "::error::AWS_SSH_PRIVATE_KEY secret is not set"
+            exit 1
+          fi
+          if [ -z "${{ secrets.AWS_HOST }}" ]; then
+            echo "::error::AWS_HOST secret is not set"
+            exit 1
+          fi
+
+      - name: Setup SSH key
+        run: |
+          mkdir -p ~/.ssh
+          echo "${{ secrets.AWS_SSH_PRIVATE_KEY }}" > ~/.ssh/deploy_key
+          chmod 600 ~/.ssh/deploy_key
+          ssh-keyscan -H ${{ secrets.AWS_HOST }} >> ~/.ssh/known_hosts 2>/dev/null
+
+      - name: Deploy to server
+        env:
+          SSH_USER: ${{ secrets.AWS_SSH_USER || 'ubuntu' }}
+        run: |
+          SSH_CMD="ssh -o StrictHostKeyChecking=no -i ~/.ssh/deploy_key ${SSH_USER}@${{ secrets.AWS_HOST }}"
+
+          ${SSH_CMD} << 'DEPLOY_SCRIPT'
+            set -e
+
+            APP_DIR="/home/ubuntu/poly_discover"
+            APP_PORT=8080
+            PM2_APP_NAME="poly-discover"
+
+            echo "=== Step 1: Install system dependencies (if needed) ==="
+            if ! command -v cargo &> /dev/null; then
+              echo "Installing Rust..."
+              curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y
+              source $HOME/.cargo/env
+            fi
+            source $HOME/.cargo/env
+
+            if ! command -v node &> /dev/null; then
+              echo "Installing Node.js 20..."
+              curl -fsSL https://deb.nodesource.com/setup_20.x | sudo -E bash -
+              sudo apt-get install -y nodejs
+            fi
+
+            if ! command -v pm2 &> /dev/null; then
+              echo "Installing PM2..."
+              sudo npm install -g pm2
+              pm2 startup systemd -u ubuntu --hp /home/ubuntu || true
+            fi
+
+            echo "=== Step 2: Clone or update repository ==="
+            if [ -d "$APP_DIR/.git" ]; then
+              cd "$APP_DIR"
+              git fetch origin main
+              git reset --hard origin/main
+              git clean -fd --exclude='.env' --exclude='data/'
+            else
+              git clone ${{ github.server_url }}/${{ github.repository }}.git "$APP_DIR"
+              cd "$APP_DIR"
+            fi
+
+            echo "=== Step 3: Build Rust backend (release) ==="
+            cd "$APP_DIR"
+            cargo build --release 2>&1 | tail -5
+
+            echo "=== Step 4: Build frontend ==="
+            npm ci --prefer-offline 2>&1 | tail -3
+            npm run build
+
+            echo "=== Step 5: Copy dist to binary directory ==="
+            BINARY_DIR="$APP_DIR/target/release"
+            rm -rf "$BINARY_DIR/dist"
+            cp -r "$APP_DIR/dist" "$BINARY_DIR/dist"
+
+            echo "=== Step 6: Setup environment ==="
+            if [ ! -f "$APP_DIR/.env" ]; then
+              cp "$APP_DIR/.env.example" "$APP_DIR/.env"
+              echo "Created .env from .env.example — please configure it!"
+            fi
+
+            echo "=== Step 7: Create data directory ==="
+            mkdir -p "$APP_DIR/data"
+
+            echo "=== Step 8: Restart application on port $APP_PORT ==="
+            pm2 delete "$PM2_APP_NAME" 2>/dev/null || true
+            cd "$APP_DIR"
+            pm2 start "$BINARY_DIR/poly-discover" \
+              --name "$PM2_APP_NAME" \
+              --cwd "$APP_DIR" \
+              -- serve --port $APP_PORT --host 0.0.0.0
+            pm2 save
+
+            echo "=== Step 9: Verify deployment ==="
+            sleep 3
+            if curl -sf "http://localhost:${APP_PORT}/api/health" > /dev/null 2>&1; then
+              echo "✅ Deployment successful! App running on port $APP_PORT"
+              curl -s "http://localhost:${APP_PORT}/api/health" | head -c 200
+              echo ""
+            else
+              echo "⚠️ App may still be starting... checking PM2 status:"
+              pm2 status "$PM2_APP_NAME"
+              pm2 logs "$PM2_APP_NAME" --lines 10 --nostream
+            fi
+
+            echo "=== Deployment complete ==="
+          DEPLOY_SCRIPT
+
+      - name: Cleanup SSH key
+        if: always()
+        run: rm -f ~/.ssh/deploy_key

@@ -1,30 +1,14 @@
 <script>
-  import { onDestroy } from 'svelte';
-  import { startDiscovery, getDiscoveryStatus } from '../lib/api.js';
-  import { serverHealth } from '../lib/stores.js';
-  import { Search, Sparkles, Loader2, Zap, Trophy } from 'lucide-svelte';
+  import { startDiscovery, cancelDiscovery } from '../lib/api.js';
+  import { serverHealth, discoveryStatus } from '../lib/stores.js';
+  import { Search, Sparkles, Loader2, Zap, Trophy, Square } from 'lucide-svelte';
 
   // ============================================================================
-  // Discovery Agent state
+  // Configuration state
   // ============================================================================
   let discoverSymbols = $state({ BTCUSDT: true, ETHUSDT: true, SOLUSDT: true, XRPUSDT: true });
   let discoverDays = $state(90);
-  let discoverSizing = $state('fixed');
-  let discoverTopN = $state(10);
-
-  let discovering = $state(false);
-  let discoverPhase = $state('');
-  let discoverCurrentStrategy = $state('');
-  let discoverCurrentSymbol = $state('');
-  let discoverProgress = $state(0);
-  let discoverCompleted = $state(0);
-  let discoverTotal = $state(0);
-  let discoverSkipped = $state(0);
-  let discoverBestSoFar = $state([]);
-  let discoverResults = $state([]);
   let discoverError = $state(null);
-  let discoverStartedAt = $state(null);
-  let discoverInterval = $state(null);
 
   // ============================================================================
   // Helpers
@@ -38,6 +22,10 @@
       'Stochastic': 'text-yellow-400',
       'ATR Mean Reversion': 'text-pink-400',
       'Gabagool': 'text-orange-400',
+      'VWAP': 'text-teal-400',
+      'OBV': 'text-lime-400',
+      'Williams': 'text-rose-400',
+      'ADX': 'text-indigo-400',
     };
     for (const [key, color] of Object.entries(colors)) {
       if (name.includes(key) || name.includes(key.split(' ')[0])) return color;
@@ -63,6 +51,14 @@
       case 'macd_bollinger': return `MACD(${st.macd_fast},${st.macd_slow}) BB(${st.bb_period})`;
       case 'triple_rsi_macd_bb': return `RSI(${st.rsi_period}) MACD(${st.macd_slow}) BB(${st.bb_period})`;
       case 'triple_ema_rsi_stoch': return `EMA(${st.ema_fast}) RSI(${st.rsi_period}) Stoch(${st.stoch_period})`;
+      case 'vwap': return `Period=${st.period}`;
+      case 'obv': return `SMA=${st.sma_period}`;
+      case 'williams_r': return `Period=${st.period} OB=${st.overbought} OS=${st.oversold}`;
+      case 'adx': return `Period=${st.period} Threshold=${st.adx_threshold}`;
+      case 'vwap_rsi': return `VWAP(${st.vwap_period}) RSI(${st.rsi_period})`;
+      case 'obv_macd': return `OBV(${st.obv_sma_period}) MACD(${st.macd_fast},${st.macd_slow})`;
+      case 'adx_ema': return `ADX(${st.adx_period},${st.adx_threshold}) EMA(${st.ema_fast},${st.ema_slow})`;
+      case 'williams_r_stoch': return `WR(${st.wr_period}) Stoch(${st.stoch_period})`;
       default: return JSON.stringify(st);
     }
   }
@@ -76,7 +72,7 @@
   // ============================================================================
   // Discovery actions
   // ============================================================================
-  async function handleStartDiscovery() {
+  async function handleStart() {
     const selectedSymbols = Object.entries(discoverSymbols)
       .filter(([_, v]) => v)
       .map(([k]) => k);
@@ -86,60 +82,22 @@
       return;
     }
 
-    discovering = true;
-    discoverProgress = 0;
-    discoverResults = [];
-    discoverBestSoFar = [];
     discoverError = null;
-    discoverPhase = 'Starting...';
 
     const res = await startDiscovery({
       symbols: selectedSymbols,
       days: discoverDays,
-      top_n: discoverTopN,
-      sizing_mode: discoverSizing,
     });
 
     if (!res.success) {
       discoverError = res.message;
-      discovering = false;
-      return;
-    }
-
-    discoverInterval = setInterval(pollDiscoveryStatus, 500);
-  }
-
-  async function pollDiscoveryStatus() {
-    const status = await getDiscoveryStatus();
-    discoverProgress = status.progress_pct || 0;
-    discoverPhase = status.phase || '';
-    discoverCurrentStrategy = status.current_strategy || '';
-    discoverCurrentSymbol = status.current_symbol || '';
-    discoverCompleted = status.completed || 0;
-    discoverTotal = status.total || 0;
-    discoverSkipped = status.skipped || 0;
-    discoverStartedAt = status.started_at || null;
-    discoverBestSoFar = status.best_so_far || [];
-
-    if (status.status === 'complete') {
-      discoverResults = status.results || [];
-      discovering = false;
-      clearInterval(discoverInterval);
-    } else if (status.status === 'error') {
-      discoverError = status.error || 'Discovery failed';
-      discovering = false;
-      clearInterval(discoverInterval);
     }
   }
 
-  // ============================================================================
-  // Cleanup
-  // ============================================================================
-  onDestroy(() => {
-    if (discoverInterval) {
-      clearInterval(discoverInterval);
-    }
-  });
+  async function handleStop() {
+    discoverError = null;
+    await cancelDiscovery();
+  }
 </script>
 
 <div class="space-y-6">
@@ -148,13 +106,21 @@
     <Search size={28} class="text-cyan-400" />
     <div>
       <h2 class="text-2xl font-bold text-white">Discovery Agent</h2>
-      <p class="text-sm text-gray-400">Autonomous agent that tests ~2000 strategy combinations across multiple indicators and symbols</p>
+      <p class="text-sm text-gray-400">ML-guided autonomous agent — tests thousands of strategy combinations and learns from results</p>
     </div>
   </div>
 
-  <!-- Configuration -->
+  <!-- Configuration + Start/Stop -->
   <div class="bg-gray-800 rounded-lg p-6">
-    <h3 class="text-lg font-semibold text-white mb-5">Configuration</h3>
+    <div class="flex items-center justify-between mb-5">
+      <h3 class="text-lg font-semibold text-white">Configuration</h3>
+      {#if $discoveryStatus.running}
+        <div class="flex items-center gap-2 text-sm text-cyan-400">
+          <div class="w-2 h-2 rounded-full bg-cyan-400 animate-pulse"></div>
+          Running continuously
+        </div>
+      {/if}
+    </div>
 
     <div class="grid grid-cols-1 md:grid-cols-2 gap-6">
       <!-- Symbols selection -->
@@ -162,88 +128,89 @@
         <label class="block text-sm text-gray-400 mb-2">Symbols</label>
         <div class="flex flex-wrap gap-3">
           {#each ['BTCUSDT', 'ETHUSDT', 'SOLUSDT', 'XRPUSDT'] as sym}
-            <label class="flex items-center gap-2 bg-gray-700 px-3 py-2 rounded-lg cursor-pointer hover:bg-gray-600 transition-colors">
-              <input type="checkbox" bind:checked={discoverSymbols[sym]} class="accent-cyan-500 w-4 h-4" />
+            <label class="flex items-center gap-2 bg-gray-700 px-3 py-2 rounded-lg cursor-pointer hover:bg-gray-600 transition-colors {$discoveryStatus.running ? 'opacity-50 pointer-events-none' : ''}">
+              <input type="checkbox" bind:checked={discoverSymbols[sym]} class="accent-cyan-500 w-4 h-4" disabled={$discoveryStatus.running} />
               <span class="text-white text-sm font-medium">{sym.replace('USDT', '')}</span>
             </label>
           {/each}
         </div>
       </div>
 
-      <!-- Parameters -->
-      <div class="grid grid-cols-3 gap-4">
-        <div>
-          <label class="block text-sm text-gray-400 mb-1">Days</label>
-          <input type="number" bind:value={discoverDays} min="7" max="365" class="w-full bg-gray-700 text-white rounded px-3 py-2 border border-gray-600 focus:border-cyan-500 focus:outline-none" />
-        </div>
-        <div>
-          <label class="block text-sm text-gray-400 mb-1">Sizing</label>
-          <select bind:value={discoverSizing} class="w-full bg-gray-700 text-white rounded px-3 py-2 border border-gray-600 focus:border-cyan-500 focus:outline-none">
-            <option value="fixed">Fixed %</option>
-            <option value="kelly">Kelly Criterion</option>
-            <option value="confidence_weighted">Confidence</option>
-          </select>
-        </div>
-        <div>
-          <label class="block text-sm text-gray-400 mb-1">Top N</label>
-          <input type="number" bind:value={discoverTopN} min="3" max="50" class="w-full bg-gray-700 text-white rounded px-3 py-2 border border-gray-600 focus:border-cyan-500 focus:outline-none" />
-        </div>
+      <!-- Days parameter -->
+      <div>
+        <label class="block text-sm text-gray-400 mb-1">Days of data</label>
+        <input type="number" bind:value={discoverDays} min="7" max="365" disabled={$discoveryStatus.running} class="w-32 bg-gray-700 text-white rounded px-3 py-2 border border-gray-600 focus:border-cyan-500 focus:outline-none disabled:opacity-50" />
       </div>
     </div>
 
     <div class="mt-6">
-      <button
-        onclick={handleStartDiscovery}
-        disabled={discovering || !$serverHealth.connected}
-        class="flex items-center gap-2 px-6 py-3 bg-cyan-600 hover:bg-cyan-700 disabled:bg-gray-600 disabled:cursor-not-allowed text-white font-semibold rounded-lg transition-colors"
-      >
-        {#if discovering}
-          <Loader2 size={20} class="animate-spin" />
-          <span>Scanning... {discoverProgress.toFixed(0)}%</span>
-        {:else}
+      {#if $discoveryStatus.running}
+        <button
+          onclick={handleStop}
+          class="flex items-center gap-2 px-6 py-3 bg-red-600 hover:bg-red-700 text-white font-semibold rounded-lg transition-colors"
+        >
+          <Square size={20} />
+          <span>Stop Discovery</span>
+        </button>
+      {:else}
+        <button
+          onclick={handleStart}
+          disabled={!$serverHealth.connected}
+          class="flex items-center gap-2 px-6 py-3 bg-emerald-600 hover:bg-emerald-700 disabled:bg-gray-600 disabled:cursor-not-allowed text-white font-semibold rounded-lg transition-colors"
+        >
           <Sparkles size={20} />
-          <span>Launch Discovery Agent</span>
-        {/if}
-      </button>
+          <span>Start Discovery</span>
+        </button>
+      {/if}
     </div>
   </div>
 
-  <!-- Progress Bar -->
-  {#if discovering}
+  <!-- Progress Panel -->
+  {#if $discoveryStatus.running}
     <div class="bg-gray-800 rounded-lg p-5">
+      <!-- Cycle + Phase info -->
       <div class="flex justify-between items-center mb-2">
         <div>
-          <span class="text-sm text-cyan-400 font-medium">{discoverPhase}</span>
-          {#if discoverCurrentStrategy}
+          <span class="text-sm text-cyan-400 font-medium">{$discoveryStatus.phase}</span>
+          {#if $discoveryStatus.current_strategy}
             <span class="text-sm text-gray-400 ml-2">
-              {discoverCurrentStrategy} / {discoverCurrentSymbol}
+              {$discoveryStatus.current_strategy} / {$discoveryStatus.current_symbol}
             </span>
           {/if}
         </div>
         <div class="text-right">
-          <span class="text-sm text-white font-medium">{discoverProgress.toFixed(1)}%</span>
-          <span class="text-xs text-gray-500 ml-2">{discoverCompleted}/{discoverTotal}</span>
-          {#if discoverSkipped > 0}
-            <span class="text-xs text-emerald-400 ml-2">({discoverSkipped} cached)</span>
+          <span class="text-sm text-white font-medium">{$discoveryStatus.progress_pct.toFixed(1)}%</span>
+          <span class="text-xs text-gray-500 ml-2">{$discoveryStatus.completed}/{$discoveryStatus.total}</span>
+          {#if $discoveryStatus.skipped > 0}
+            <span class="text-xs text-emerald-400 ml-2">({$discoveryStatus.skipped} cached)</span>
           {/if}
         </div>
       </div>
+
+      <!-- Progress bar -->
       <div class="w-full bg-gray-700 rounded-full h-3">
         <div
           class="bg-gradient-to-r from-cyan-600 to-cyan-400 h-3 rounded-full transition-all duration-300"
-          style="width: {Math.min(discoverProgress, 100)}%"
+          style="width: {Math.min($discoveryStatus.progress_pct, 100)}%"
         ></div>
       </div>
 
+      <!-- Global stats -->
+      <div class="mt-3 flex items-center gap-6 text-sm">
+        <span class="text-gray-400">Cycle <span class="text-white font-bold">{$discoveryStatus.current_cycle}</span></span>
+        <span class="text-gray-400">Total: <span class="text-white font-bold">{$discoveryStatus.total_tested_all_cycles.toLocaleString()}</span> tested</span>
+        <span class="text-gray-400">New this cycle: <span class="text-cyan-400 font-bold">{$discoveryStatus.total_new_this_cycle.toLocaleString()}</span></span>
+      </div>
+
       <!-- Live Top 3 -->
-      {#if discoverBestSoFar.length > 0}
+      {#if $discoveryStatus.best_so_far.length > 0}
         <div class="mt-4">
           <h4 class="text-sm text-gray-400 mb-2 flex items-center gap-1">
             <Zap size={14} class="text-yellow-400" />
-            Live Top {Math.min(3, discoverBestSoFar.length)}
+            Live Top {Math.min(3, $discoveryStatus.best_so_far.length)}
           </h4>
           <div class="grid grid-cols-1 md:grid-cols-3 gap-3">
-            {#each discoverBestSoFar.slice(0, 3) as r, i}
+            {#each $discoveryStatus.best_so_far.slice(0, 3) as r, i}
               <div class="bg-gray-700/50 border border-gray-600 rounded-lg p-3">
                 <div class="flex items-center justify-between mb-1">
                   <span class="text-xs font-bold {getStrategyColor(r.strategy_name)}">{r.strategy_name}</span>
@@ -267,16 +234,16 @@
     <div class="bg-red-900/30 border border-red-700 rounded-lg p-4 text-red-300">{discoverError}</div>
   {/if}
 
-  <!-- Final Results -->
-  {#if discoverResults.length > 0 && !discovering}
+  <!-- Results when idle (show last results) -->
+  {#if !$discoveryStatus.running && $discoveryStatus.results.length > 0}
     <div class="bg-gray-800 rounded-lg p-6">
       <h3 class="text-lg font-semibold text-cyan-400 mb-4 flex items-center gap-2">
         <Trophy size={20} />
-        Discovery Results — Top {discoverResults.length} Strategies
+        Best Strategies — Top {Math.min(10, $discoveryStatus.results.length)}
       </h3>
 
       <div class="grid grid-cols-1 md:grid-cols-2 gap-4">
-        {#each discoverResults as r}
+        {#each $discoveryStatus.results.slice(0, 10) as r}
           <div class="bg-gray-700/50 border rounded-lg p-4 {r.rank <= 3 ? 'border-cyan-600/50' : 'border-gray-600/30'}">
             <!-- Header -->
             <div class="flex items-center justify-between mb-3">
@@ -303,9 +270,6 @@
               <div><span class="text-gray-400">Sharpe:</span> <span class="text-white">{parseFloat(r.sharpe_ratio).toFixed(2)}</span></div>
               <div><span class="text-gray-400">Drawdown:</span> <span class="text-red-400">{parseFloat(r.max_drawdown_pct).toFixed(1)}%</span></div>
               <div><span class="text-gray-400">PF:</span> <span class="{parseFloat(r.profit_factor) >= 1 ? 'text-green-400' : 'text-red-400'}">{parseFloat(r.profit_factor).toFixed(2)}</span></div>
-              <div><span class="text-gray-400">Fees:</span> <span class="text-orange-400">${parseFloat(r.total_fees).toFixed(2)}</span></div>
-              <div><span class="text-gray-400">Avg/Trade:</span> <span class="{parseFloat(r.avg_trade_pnl) >= 0 ? 'text-green-400' : 'text-red-400'}">{formatPnl(r.avg_trade_pnl)}</span></div>
-              <div><span class="text-gray-400">Sizing:</span> <span class="text-gray-300">{r.sizing_mode}</span></div>
             </div>
 
             {#if r.hit_rate != null}

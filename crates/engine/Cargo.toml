@@ -19,6 +19,7 @@ anyhow = { workspace = true }
 thiserror = { workspace = true }
 ta = { workspace = true }
 async-trait = { workspace = true }
+rand = { workspace = true }
 
 [dev-dependencies]
 rust_decimal_macros = { workspace = true }

@@ -12,9 +12,11 @@ use std::sync::{
 };
 use tracing::{info, warn};
 
+use crate::discovery::DiscoveryStrategyType;
 use crate::engine::BacktestEngine;
 use crate::fees::{calculate_taker_fee, PolymarketFeeConfig};
 use crate::gabagool::{GabagoolBacktestConfig, GabagoolBacktestEngine, GabagoolBacktestResult};
+use crate::indicators::build_signal_generator;
 use crate::types::{BacktestConfig, BacktestResult, Kline};
 
 // ============================================================================
@@ -26,6 +28,15 @@ use crate::types::{BacktestConfig, BacktestResult, Kline};
 #[serde(rename_all = "snake_case")]
 pub enum OptimizeStrategy {
     Rsi,
+    BollingerBands,
+    Macd,
+    EmaCrossover,
+    Stochastic,
+    AtrMeanReversion,
+    Vwap,
+    Obv,
+    WilliamsR,
+    Adx,
     Gabagool,
 }
 
@@ -33,6 +44,15 @@ impl std::fmt::Display for OptimizeStrategy {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
             OptimizeStrategy::Rsi => write!(f, "RSI"),
+            OptimizeStrategy::BollingerBands => write!(f, "Bollinger Bands"),
+            OptimizeStrategy::Macd => write!(f, "MACD"),
+            OptimizeStrategy::EmaCrossover => write!(f, "EMA Crossover"),
+            OptimizeStrategy::Stochastic => write!(f, "Stochastic"),
+            OptimizeStrategy::AtrMeanReversion => write!(f, "ATR Mean Reversion"),
+            OptimizeStrategy::Vwap => write!(f, "VWAP"),
+            OptimizeStrategy::Obv => write!(f, "OBV"),
+            OptimizeStrategy::WilliamsR => write!(f, "Williams %R"),
+            OptimizeStrategy::Adx => write!(f, "ADX"),
             OptimizeStrategy::Gabagool => write!(f, "Gabagool"),
         }
     }
@@ -216,6 +236,110 @@ pub fn generate_gabagool_grid() -> Vec<GabagoolParamSet> {
     grid
 }
 
+/// Generate a parameter grid of DiscoveryStrategyType for a given OptimizeStrategy
+fn generate_indicator_grid(strategy: &OptimizeStrategy) -> Vec<DiscoveryStrategyType> {
+    let mut grid = Vec::new();
+
+    match strategy {
+        OptimizeStrategy::BollingerBands => {
+            for &period in &[8usize, 10, 15, 18, 20, 22, 25, 30] {
+                for &mult in &[1.5, 1.75, 2.0, 2.25, 2.5, 3.0] {
+                    grid.push(DiscoveryStrategyType::BollingerBands {
+                        period,
+                        multiplier: mult,
+                    });
+                }
+            }
+        }
+        OptimizeStrategy::Macd => {
+            for &fast in &[5usize, 8, 10, 12] {
+                for &slow in &[17usize, 21, 24, 26, 30] {
+                    for &signal in &[5usize, 7, 9, 12] {
+                        if fast < slow {
+                            grid.push(DiscoveryStrategyType::Macd { fast, slow, signal });
+                        }
+                    }
+                }
+            }
+        }
+        OptimizeStrategy::EmaCrossover => {
+            for &fast in &[5usize, 8, 10, 12, 13, 15] {
+                for &slow in &[20usize, 25, 26, 30, 40, 50] {
+                    if fast < slow {
+                        grid.push(DiscoveryStrategyType::EmaCrossover {
+                            fast_period: fast,
+                            slow_period: slow,
+                        });
+                    }
+                }
+            }
+        }
+        OptimizeStrategy::Stochastic => {
+            for &period in &[5usize, 7, 9, 14, 18, 21] {
+                for &ob in &[75.0, 80.0, 85.0, 90.0] {
+                    for &os in &[10.0, 15.0, 20.0, 25.0] {
+                        grid.push(DiscoveryStrategyType::Stochastic {
+                            period,
+                            overbought: ob,
+                            oversold: os,
+                        });
+                    }
+                }
+            }
+        }
+        OptimizeStrategy::AtrMeanReversion => {
+            for &atr in &[5usize, 7, 10, 14, 21] {
+                for &sma in &[10usize, 15, 20, 30, 50] {
+                    for &mult in &[1.0, 1.5, 2.0, 2.5, 3.0] {
+                        grid.push(DiscoveryStrategyType::AtrMeanReversion {
+                            atr_period: atr,
+                            sma_period: sma,
+                            multiplier: mult,
+                        });
+                    }
+                }
+            }
+        }
+        OptimizeStrategy::Vwap => {
+            for &period in &[5usize, 10, 15, 20, 25, 30, 40, 50] {
+                grid.push(DiscoveryStrategyType::Vwap { period });
+            }
+        }
+        OptimizeStrategy::Obv => {
+            for &sma_period in &[5usize, 7, 10, 14, 20, 25, 30] {
+                grid.push(DiscoveryStrategyType::Obv { sma_period });
+            }
+        }
+        OptimizeStrategy::WilliamsR => {
+            for &period in &[5usize, 7, 10, 14, 18, 21, 28] {
+                for &ob in &[-10.0f64, -15.0, -20.0, -25.0] {
+                    for &os in &[-75.0f64, -80.0, -85.0, -90.0] {
+                        grid.push(DiscoveryStrategyType::WilliamsR {
+                            period,
+                            overbought: ob,
+                            oversold: os,
+                        });
+                    }
+                }
+            }
+        }
+        OptimizeStrategy::Adx => {
+            for &period in &[5usize, 7, 10, 14, 18, 21] {
+                for &threshold in &[15.0, 20.0, 25.0, 30.0, 35.0] {
+                    grid.push(DiscoveryStrategyType::Adx {
+                        period,
+                        adx_threshold: threshold,
+                    });
+                }
+            }
+        }
+        // RSI and Gabagool use their own dedicated grids
+        _ => {}
+    }
+
+    grid
+}
+
 // ============================================================================
 // Fee Calculation Helpers
 // ============================================================================
@@ -278,6 +402,31 @@ fn score_rsi(result: &BacktestResult, total_fees: Decimal) -> Decimal {
     net_pnl + win_rate_bonus + sharpe_bonus + drawdown_penalty + pf_bonus
 }
 
+/// Score a generic indicator backtest result. Higher is better.
+fn score_indicator(
+    net_pnl: Decimal,
+    win_rate: Decimal,
+    sharpe_ratio: Decimal,
+    max_drawdown_pct: Decimal,
+    profit_factor: Decimal,
+    total_trades: u32,
+) -> Decimal {
+    if total_trades < 5 {
+        return dec!(-9999);
+    }
+
+    let win_rate_bonus = (win_rate - dec!(50)) * dec!(2);
+    let sharpe_bonus = sharpe_ratio * dec!(100);
+    let drawdown_penalty = max_drawdown_pct * dec!(-3);
+    let pf_bonus = if profit_factor > Decimal::ONE {
+        (profit_factor - Decimal::ONE) * dec!(50)
+    } else {
+        (profit_factor - Decimal::ONE) * dec!(100)
+    };
+
+    net_pnl + win_rate_bonus + sharpe_bonus + drawdown_penalty + pf_bonus
+}
+
 /// Score a Gabagool backtest result. Higher is better.
 fn score_gabagool(result: &GabagoolBacktestResult, total_fees: Decimal) -> Decimal {
     let net_profit = result.total_locked_profit - total_fees;
@@ -324,6 +473,17 @@ pub async fn run_optimization(
         }
         OptimizeStrategy::Gabagool => {
             run_gabagool_optimization(&request, &klines, &fee_config, top_n, &progress).await;
+        }
+        ref s @ (OptimizeStrategy::BollingerBands
+        | OptimizeStrategy::Macd
+        | OptimizeStrategy::EmaCrossover
+        | OptimizeStrategy::Stochastic
+        | OptimizeStrategy::AtrMeanReversion
+        | OptimizeStrategy::Vwap
+        | OptimizeStrategy::Obv
+        | OptimizeStrategy::WilliamsR
+        | OptimizeStrategy::Adx) => {
+            run_indicator_optimization(s, &klines, &fee_config, top_n, &progress).await;
         }
     }
 }
@@ -385,6 +545,207 @@ async fn run_rsi_optimization(
         progress.completed.store((i + 1) as u32, Ordering::Relaxed);
 
         // Yield to runtime every 10 iterations
+        if i % 10 == 0 {
+            tokio::task::yield_now().await;
+        }
+    }
+
+    finalize_results(scored, top_n, progress);
+}
+
+/// Generic indicator optimization using SignalGenerator + discovery backtest engine
+async fn run_indicator_optimization(
+    strategy: &OptimizeStrategy,
+    klines: &[Kline],
+    fee_config: &PolymarketFeeConfig,
+    top_n: usize,
+    progress: &Arc<OptimizeProgress>,
+) {
+    let grid = generate_indicator_grid(strategy);
+    let total = grid.len() as u32;
+    progress.total_combinations.store(total, Ordering::Relaxed);
+
+    info!(combinations = total, strategy = %strategy, "Indicator grid generated");
+
+    let mut scored: Vec<ScoredResult> = Vec::with_capacity(grid.len());
+
+    let initial_capital = dec!(10000);
+    let base_position_pct = dec!(10);
+    let poly_price = dec!(0.50);
+
+    for (i, strategy_type) in grid.iter().enumerate() {
+        if progress.cancelled.load(Ordering::Relaxed) {
+            warn!("Optimization cancelled");
+            break;
+        }
+
+        let mut generator = build_signal_generator(strategy_type);
+
+        // Run bar-by-bar backtest using the same logic as discovery
+        let hundred = dec!(100);
+        let mut equity = initial_capital;
+        let mut peak_equity = equity;
+        let mut max_drawdown_pct = Decimal::ZERO;
+
+        struct Pos {
+            entry_price: Decimal,
+            size: Decimal,
+        }
+        let mut position: Option<Pos> = None;
+        let mut trades_pnl: Vec<Decimal> = Vec::new();
+        let mut trades_pnl_pct: Vec<Decimal> = Vec::new();
+        let mut winning = 0u32;
+        let mut total_trade_count = 0u32;
+        let mut total_fees = Decimal::ZERO;
+
+        for kline in klines {
+            let sig = generator.on_bar(kline);
+
+            match sig.signal {
+                crate::strategy::Signal::Buy => {
+                    if position.is_none() {
+                        let position_value = equity * base_position_pct / hundred;
+                        let shares = position_value / kline.close;
+                        let entry_fee = calculate_taker_fee(shares, poly_price, fee_config);
+                        equity -= entry_fee;
+                        total_fees += entry_fee;
+                        position = Some(Pos {
+                            entry_price: kline.close,
+                            size: shares,
+                        });
+                    }
+                }
+                crate::strategy::Signal::Sell => {
+                    if let Some(pos) = position.take() {
+                        let pnl = (kline.close - pos.entry_price) * pos.size;
+                        let exit_fee = calculate_taker_fee(pos.size, poly_price, fee_config);
+                        total_fees += exit_fee;
+                        equity += pnl - exit_fee;
+
+                        let pnl_pct = if pos.entry_price > Decimal::ZERO {
+                            (kline.close - pos.entry_price) / pos.entry_price * hundred
+                        } else {
+                            Decimal::ZERO
+                        };
+
+                        total_trade_count += 1;
+                        if pnl > Decimal::ZERO {
+                            winning += 1;
+                        }
+                        trades_pnl.push(pnl);
+                        trades_pnl_pct.push(pnl_pct);
+                    }
+                }
+                crate::strategy::Signal::Hold => {}
+            }
+
+            // Track drawdown
+            let unrealized = position
+                .as_ref()
+                .map(|p| (kline.close - p.entry_price) * p.size)
+                .unwrap_or(Decimal::ZERO);
+            let current_equity = equity + unrealized;
+            if current_equity > peak_equity {
+                peak_equity = current_equity;
+            }
+            if peak_equity > Decimal::ZERO {
+                let dd = (peak_equity - current_equity) / peak_equity * hundred;
+                if dd > max_drawdown_pct {
+                    max_drawdown_pct = dd;
+                }
+            }
+        }
+
+        // Close remaining position
+        if let Some(pos) = position.take() {
+            if let Some(last) = klines.last() {
+                let pnl = (last.close - pos.entry_price) * pos.size;
+                let exit_fee = calculate_taker_fee(pos.size, poly_price, fee_config);
+                total_fees += exit_fee;
+                equity += pnl - exit_fee;
+                total_trade_count += 1;
+                if pnl > Decimal::ZERO {
+                    winning += 1;
+                }
+                let pnl_pct = if pos.entry_price > Decimal::ZERO {
+                    (last.close - pos.entry_price) / pos.entry_price * hundred
+                } else {
+                    Decimal::ZERO
+                };
+                trades_pnl.push(pnl);
+                trades_pnl_pct.push(pnl_pct);
+            }
+        }
+
+        let net_pnl = equity - initial_capital;
+        let win_rate = if total_trade_count > 0 {
+            Decimal::from(winning) / Decimal::from(total_trade_count) * hundred
+        } else {
+            Decimal::ZERO
+        };
+
+        let gross_profits: Decimal = trades_pnl.iter().filter(|&&p| p > Decimal::ZERO).sum();
+        let gross_losses: Decimal = trades_pnl
+            .iter()
+            .filter(|&&p| p < Decimal::ZERO)
+            .map(|p| p.abs())
+            .sum();
+        let profit_factor = if gross_losses > Decimal::ZERO {
+            gross_profits / gross_losses
+        } else if gross_profits > Decimal::ZERO {
+            dec!(999.99)
+        } else {
+            Decimal::ZERO
+        };
+
+        // Sharpe ratio
+        let sharpe_ratio = if trades_pnl_pct.len() >= 2 {
+            let returns: Vec<f64> = trades_pnl_pct
+                .iter()
+                .map(|d| d.to_string().parse::<f64>().unwrap_or(0.0))
+                .collect();
+            let n = returns.len() as f64;
+            let mean = returns.iter().sum::<f64>() / n;
+            let variance =
+                returns.iter().map(|r| (r - mean).powi(2)).sum::<f64>() / (n - 1.0);
+            let std_dev = variance.sqrt();
+            if std_dev > 1e-10 {
+                Decimal::from_str_exact(&format!("{:.2}", mean / std_dev))
+                    .unwrap_or(Decimal::ZERO)
+            } else {
+                Decimal::ZERO
+            }
+        } else {
+            Decimal::ZERO
+        };
+
+        let composite = score_indicator(
+            net_pnl,
+            win_rate,
+            sharpe_ratio,
+            max_drawdown_pct,
+            profit_factor,
+            total_trade_count,
+        );
+
+        scored.push(ScoredResult {
+            rank: 0,
+            composite_score: composite,
+            params: serde_json::to_value(strategy_type).unwrap_or_default(),
+            net_pnl,
+            gross_pnl: net_pnl + total_fees,
+            total_fees,
+            win_rate,
+            sharpe_ratio,
+            max_drawdown_pct,
+            profit_factor,
+            total_trades: total_trade_count,
+            hit_rate: None,
+            avg_locked_profit: None,
+        });
+
+        progress.completed.store((i + 1) as u32, Ordering::Relaxed);
+
         if i % 10 == 0 {
             tokio::task::yield_now().await;
         }
@@ -508,6 +869,19 @@ mod tests {
     }
 
     #[test]
+    fn test_indicator_grids_are_nonempty() {
+        assert!(!generate_indicator_grid(&OptimizeStrategy::BollingerBands).is_empty());
+        assert!(!generate_indicator_grid(&OptimizeStrategy::Macd).is_empty());
+        assert!(!generate_indicator_grid(&OptimizeStrategy::EmaCrossover).is_empty());
+        assert!(!generate_indicator_grid(&OptimizeStrategy::Stochastic).is_empty());
+        assert!(!generate_indicator_grid(&OptimizeStrategy::AtrMeanReversion).is_empty());
+        assert!(!generate_indicator_grid(&OptimizeStrategy::Vwap).is_empty());
+        assert!(!generate_indicator_grid(&OptimizeStrategy::Obv).is_empty());
+        assert!(!generate_indicator_grid(&OptimizeStrategy::WilliamsR).is_empty());
+        assert!(!generate_indicator_grid(&OptimizeStrategy::Adx).is_empty());
+    }
+
+    #[test]
     fn test_rsi_scoring_penalizes_few_trades() {
         let result = BacktestResult {
             symbol: "BTCUSDT".to_string(),
@@ -587,5 +961,31 @@ mod tests {
 
         let score = score_gabagool(&result, Decimal::ZERO);
         assert_eq!(score, dec!(-9999));
+    }
+
+    #[test]
+    fn test_indicator_scoring_penalizes_few_trades() {
+        let score = score_indicator(
+            dec!(500),
+            dec!(80),
+            dec!(2),
+            dec!(5),
+            dec!(3),
+            3, // Below minimum
+        );
+        assert_eq!(score, dec!(-9999));
+    }
+
+    #[test]
+    fn test_indicator_scoring_rewards_good_result() {
+        let score = score_indicator(
+            dec!(800),
+            dec!(65),
+            dec!(1.5),
+            dec!(2),
+            dec!(2.0),
+            20,
+        );
+        assert!(score > dec!(900));
     }
 }

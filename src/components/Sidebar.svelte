@@ -1,6 +1,6 @@
 <script>
   import { Search, Database, Sparkles } from 'lucide-svelte';
-  import { currentPage, serverHealth } from '../lib/stores.js';
+  import { currentPage, serverHealth, discoveryStatus } from '../lib/stores.js';
 
   const navItems = [
     { id: 'discovery', label: 'Discovery', icon: Search, color: 'cyan' },
@@ -22,7 +22,7 @@
 <aside class="w-64 bg-gray-800 min-h-screen flex flex-col">
   <div class="p-4 border-b border-gray-700">
     <h1 class="text-xl font-bold text-cyan-400">Poly Discover</h1>
-    <p class="text-xs text-gray-500">Strategy Discovery Agent</p>
+    <p class="text-xs text-gray-500">ML Discovery Agent</p>
   </div>
 
   <nav class="flex-1 p-4">
@@ -35,10 +35,22 @@
           >
             <svelte:component this={item.icon} size={20} />
             <span>{item.label}</span>
+            {#if item.id === 'discovery' && $discoveryStatus.running}
+              <div class="ml-auto w-2.5 h-2.5 rounded-full bg-cyan-400 animate-pulse"></div>
+            {/if}
           </button>
         </li>
       {/each}
     </ul>
+
+    <!-- Discovery status counter -->
+    {#if $discoveryStatus.running}
+      <div class="mt-4 px-4 py-2 bg-gray-700/50 rounded-lg">
+        <div class="text-xs text-gray-400">Discovery running...</div>
+        <div class="text-sm text-cyan-400 font-bold">{$discoveryStatus.total_tested_all_cycles.toLocaleString()} tested</div>
+        <div class="text-xs text-gray-500">Cycle {$discoveryStatus.current_cycle}</div>
+      </div>
+    {/if}
   </nav>
 
   <div class="p-4 border-t border-gray-700">

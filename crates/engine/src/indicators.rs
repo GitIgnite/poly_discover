@@ -481,6 +481,376 @@ impl SignalGenerator for AtrMeanReversionSignalGenerator {
 }
 
 // ============================================================================
+// 7. VWAP (Volume Weighted Average Price) Signal Generator
+// ============================================================================
+
+pub struct VwapSignalGenerator {
+    period: usize,
+    price_volume_sum: Vec<f64>,
+    volume_sum: Vec<f64>,
+}
+
+impl VwapSignalGenerator {
+    pub fn new(period: usize) -> Self {
+        Self {
+            period,
+            price_volume_sum: Vec::with_capacity(period),
+            volume_sum: Vec::with_capacity(period),
+        }
+    }
+}
+
+impl SignalGenerator for VwapSignalGenerator {
+    fn name(&self) -> &str {
+        "VWAP"
+    }
+
+    fn on_bar(&mut self, kline: &Kline) -> SignalWithConfidence {
+        let close = close_f64(kline);
+        let volume = kline.volume.to_string().parse::<f64>().unwrap_or(1.0);
+        let typical_price = (close
+            + kline.high.to_string().parse::<f64>().unwrap_or(close)
+            + kline.low.to_string().parse::<f64>().unwrap_or(close))
+            / 3.0;
+
+        self.price_volume_sum.push(typical_price * volume);
+        self.volume_sum.push(volume);
+        if self.price_volume_sum.len() > self.period {
+            self.price_volume_sum.remove(0);
+            self.volume_sum.remove(0);
+        }
+
+        if self.price_volume_sum.len() < self.period {
+            return SignalWithConfidence::hold();
+        }
+
+        let total_pv: f64 = self.price_volume_sum.iter().sum();
+        let total_v: f64 = self.volume_sum.iter().sum();
+
+        if total_v <= 0.0 {
+            return SignalWithConfidence::hold();
+        }
+
+        let vwap = total_pv / total_v;
+
+        if vwap <= 0.0 {
+            return SignalWithConfidence::hold();
+        }
+
+        let distance = (close - vwap) / vwap;
+
+        if close < vwap {
+            // Price below VWAP → undervalued → Buy
+            SignalWithConfidence::buy(distance.abs() * 10.0)
+        } else if close > vwap {
+            // Price above VWAP → overvalued → Sell
+            SignalWithConfidence::sell(distance.abs() * 10.0)
+        } else {
+            SignalWithConfidence::hold()
+        }
+    }
+
+    fn reset(&mut self) {
+        self.price_volume_sum.clear();
+        self.volume_sum.clear();
+    }
+}
+
+// ============================================================================
+// 8. OBV (On-Balance Volume) Signal Generator
+// ============================================================================
+
+pub struct ObvSignalGenerator {
+    sma_period: usize,
+    obv: f64,
+    obv_history: Vec<f64>,
+    prev_close: f64,
+    bars_seen: usize,
+}
+
+impl ObvSignalGenerator {
+    pub fn new(sma_period: usize) -> Self {
+        Self {
+            sma_period,
+            obv: 0.0,
+            obv_history: Vec::with_capacity(sma_period + 1),
+            prev_close: 0.0,
+            bars_seen: 0,
+        }
+    }
+}
+
+impl SignalGenerator for ObvSignalGenerator {
+    fn name(&self) -> &str {
+        "OBV"
+    }
+
+    fn on_bar(&mut self, kline: &Kline) -> SignalWithConfidence {
+        let close = close_f64(kline);
+        let volume = kline.volume.to_string().parse::<f64>().unwrap_or(0.0);
+        self.bars_seen += 1;
+
+        if self.bars_seen > 1 {
+            if close > self.prev_close {
+                self.obv += volume;
+            } else if close < self.prev_close {
+                self.obv -= volume;
+            }
+        }
+        self.prev_close = close;
+
+        self.obv_history.push(self.obv);
+        if self.obv_history.len() > self.sma_period + 1 {
+            self.obv_history.remove(0);
+        }
+
+        if self.obv_history.len() < self.sma_period {
+            return SignalWithConfidence::hold();
+        }
+
+        let sma_obv: f64 =
+            self.obv_history.iter().sum::<f64>() / self.obv_history.len() as f64;
+
+        // Compute OBV slope (change over last few bars) for confidence
+        let slope = if self.obv_history.len() >= 3 {
+            let n = self.obv_history.len();
+            (self.obv_history[n - 1] - self.obv_history[n - 3]) / 2.0
+        } else {
+            0.0
+        };
+
+        let max_vol = volume.max(1.0);
+        let normalized_slope = (slope / max_vol).abs().min(1.0);
+
+        if self.obv > sma_obv {
+            // OBV above its SMA → bullish → Buy
+            SignalWithConfidence::buy(normalized_slope)
+        } else if self.obv < sma_obv {
+            // OBV below its SMA → bearish → Sell
+            SignalWithConfidence::sell(normalized_slope)
+        } else {
+            SignalWithConfidence::hold()
+        }
+    }
+
+    fn reset(&mut self) {
+        self.obv = 0.0;
+        self.obv_history.clear();
+        self.prev_close = 0.0;
+        self.bars_seen = 0;
+    }
+}
+
+// ============================================================================
+// 9. Williams %R Signal Generator
+// ============================================================================
+
+pub struct WilliamsRSignalGenerator {
+    period: usize,
+    overbought: f64,
+    oversold: f64,
+    highs: Vec<f64>,
+    lows: Vec<f64>,
+}
+
+impl WilliamsRSignalGenerator {
+    pub fn new(period: usize, overbought: f64, oversold: f64) -> Self {
+        Self {
+            period,
+            overbought,
+            oversold,
+            highs: Vec::with_capacity(period),
+            lows: Vec::with_capacity(period),
+        }
+    }
+}
+
+impl SignalGenerator for WilliamsRSignalGenerator {
+    fn name(&self) -> &str {
+        "WilliamsR"
+    }
+
+    fn on_bar(&mut self, kline: &Kline) -> SignalWithConfidence {
+        let close = close_f64(kline);
+        let high = kline.high.to_string().parse::<f64>().unwrap_or(close);
+        let low = kline.low.to_string().parse::<f64>().unwrap_or(close);
+
+        self.highs.push(high);
+        self.lows.push(low);
+        if self.highs.len() > self.period {
+            self.highs.remove(0);
+            self.lows.remove(0);
+        }
+
+        if self.highs.len() < self.period {
+            return SignalWithConfidence::hold();
+        }
+
+        let highest = self.highs.iter().cloned().fold(f64::NEG_INFINITY, f64::max);
+        let lowest = self.lows.iter().cloned().fold(f64::INFINITY, f64::min);
+
+        if (highest - lowest).abs() < 1e-10 {
+            return SignalWithConfidence::hold();
+        }
+
+        // Williams %R = (Highest High - Close) / (Highest High - Lowest Low) * -100
+        let wr = (highest - close) / (highest - lowest) * -100.0;
+
+        if wr < self.oversold {
+            // Oversold → Buy
+            let distance = (self.oversold - wr) / (100.0 + self.oversold);
+            SignalWithConfidence::buy(distance)
+        } else if wr > self.overbought {
+            // Overbought → Sell
+            let distance = (wr - self.overbought) / (-self.overbought);
+            SignalWithConfidence::sell(distance)
+        } else {
+            SignalWithConfidence::hold()
+        }
+    }
+
+    fn reset(&mut self) {
+        self.highs.clear();
+        self.lows.clear();
+    }
+}
+
+// ============================================================================
+// 10. ADX (Average Directional Index) Signal Generator
+// ============================================================================
+
+pub struct AdxSignalGenerator {
+    period: usize,
+    adx_threshold: f64,
+    prev_high: f64,
+    prev_low: f64,
+    prev_close: f64,
+    plus_dm_ema: f64,
+    minus_dm_ema: f64,
+    tr_ema: f64,
+    adx_ema: f64,
+    bars_seen: usize,
+}
+
+impl AdxSignalGenerator {
+    pub fn new(period: usize, adx_threshold: f64) -> Self {
+        Self {
+            period,
+            adx_threshold,
+            prev_high: 0.0,
+            prev_low: 0.0,
+            prev_close: 0.0,
+            plus_dm_ema: 0.0,
+            minus_dm_ema: 0.0,
+            tr_ema: 0.0,
+            adx_ema: 0.0,
+            bars_seen: 0,
+        }
+    }
+}
+
+impl SignalGenerator for AdxSignalGenerator {
+    fn name(&self) -> &str {
+        "ADX"
+    }
+
+    fn on_bar(&mut self, kline: &Kline) -> SignalWithConfidence {
+        let high = kline.high.to_string().parse::<f64>().unwrap_or(0.0);
+        let low = kline.low.to_string().parse::<f64>().unwrap_or(0.0);
+        let close = close_f64(kline);
+        self.bars_seen += 1;
+
+        if self.bars_seen == 1 {
+            self.prev_high = high;
+            self.prev_low = low;
+            self.prev_close = close;
+            return SignalWithConfidence::hold();
+        }
+
+        // True Range
+        let tr = (high - low)
+            .max((high - self.prev_close).abs())
+            .max((low - self.prev_close).abs());
+
+        // Directional Movement
+        let up_move = high - self.prev_high;
+        let down_move = self.prev_low - low;
+
+        let plus_dm = if up_move > down_move && up_move > 0.0 {
+            up_move
+        } else {
+            0.0
+        };
+        let minus_dm = if down_move > up_move && down_move > 0.0 {
+            down_move
+        } else {
+            0.0
+        };
+
+        let alpha = 1.0 / self.period as f64;
+
+        if self.bars_seen == 2 {
+            self.tr_ema = tr;
+            self.plus_dm_ema = plus_dm;
+            self.minus_dm_ema = minus_dm;
+        } else {
+            self.tr_ema = self.tr_ema * (1.0 - alpha) + tr * alpha;
+            self.plus_dm_ema = self.plus_dm_ema * (1.0 - alpha) + plus_dm * alpha;
+            self.minus_dm_ema = self.minus_dm_ema * (1.0 - alpha) + minus_dm * alpha;
+        }
+
+        self.prev_high = high;
+        self.prev_low = low;
+        self.prev_close = close;
+
+        let warmup = self.period * 2;
+        if self.bars_seen < warmup || self.tr_ema <= 0.0 {
+            return SignalWithConfidence::hold();
+        }
+
+        let plus_di = (self.plus_dm_ema / self.tr_ema) * 100.0;
+        let minus_di = (self.minus_dm_ema / self.tr_ema) * 100.0;
+
+        let di_sum = plus_di + minus_di;
+        let dx = if di_sum > 0.0 {
+            ((plus_di - minus_di).abs() / di_sum) * 100.0
+        } else {
+            0.0
+        };
+
+        self.adx_ema = self.adx_ema * (1.0 - alpha) + dx * alpha;
+
+        if self.adx_ema < self.adx_threshold {
+            // Weak trend → no signal
+            return SignalWithConfidence::hold();
+        }
+
+        let confidence = (self.adx_ema / 100.0).min(1.0);
+
+        if plus_di > minus_di {
+            // +DI > -DI → bullish trend → Buy
+            SignalWithConfidence::buy(confidence)
+        } else if minus_di > plus_di {
+            // -DI > +DI → bearish trend → Sell
+            SignalWithConfidence::sell(confidence)
+        } else {
+            SignalWithConfidence::hold()
+        }
+    }
+
+    fn reset(&mut self) {
+        self.prev_high = 0.0;
+        self.prev_low = 0.0;
+        self.prev_close = 0.0;
+        self.plus_dm_ema = 0.0;
+        self.minus_dm_ema = 0.0;
+        self.tr_ema = 0.0;
+        self.adx_ema = 0.0;
+        self.bars_seen = 0;
+    }
+}
+
+// ============================================================================
 // Combo Signal Generator
 // ============================================================================
 
@@ -773,6 +1143,89 @@ pub fn build_signal_generator(strategy_type: &DiscoveryStrategyType) -> Box<dyn 
                 )),
             ],
             CombineMode::Majority,
+        )),
+
+        // New singles
+        DiscoveryStrategyType::Vwap { period } => {
+            Box::new(VwapSignalGenerator::new(*period))
+        }
+
+        DiscoveryStrategyType::Obv { sma_period } => {
+            Box::new(ObvSignalGenerator::new(*sma_period))
+        }
+
+        DiscoveryStrategyType::WilliamsR {
+            period,
+            overbought,
+            oversold,
+        } => Box::new(WilliamsRSignalGenerator::new(*period, *overbought, *oversold)),
+
+        DiscoveryStrategyType::Adx {
+            period,
+            adx_threshold,
+        } => Box::new(AdxSignalGenerator::new(*period, *adx_threshold)),
+
+        // New combos
+        DiscoveryStrategyType::VwapRsi {
+            vwap_period,
+            rsi_period,
+            rsi_overbought,
+            rsi_oversold,
+        } => Box::new(ComboSignalGenerator::new(
+            "VWAP+RSI".to_string(),
+            vec![
+                Box::new(VwapSignalGenerator::new(*vwap_period)),
+                Box::new(RsiSignalGenerator::new(*rsi_period, *rsi_overbought, *rsi_oversold)),
+            ],
+            CombineMode::PrimaryConfirmed,
+        )),
+
+        DiscoveryStrategyType::ObvMacd {
+            obv_sma_period,
+            macd_fast,
+            macd_slow,
+            macd_signal,
+        } => Box::new(ComboSignalGenerator::new(
+            "OBV+MACD".to_string(),
+            vec![
+                Box::new(MacdSignalGenerator::new(*macd_fast, *macd_slow, *macd_signal)),
+                Box::new(ObvSignalGenerator::new(*obv_sma_period)),
+            ],
+            CombineMode::PrimaryConfirmed,
+        )),
+
+        DiscoveryStrategyType::AdxEma {
+            adx_period,
+            adx_threshold,
+            ema_fast,
+            ema_slow,
+        } => Box::new(ComboSignalGenerator::new(
+            "ADX+EMA".to_string(),
+            vec![
+                Box::new(EmaCrossoverSignalGenerator::new(*ema_fast, *ema_slow)),
+                Box::new(AdxSignalGenerator::new(*adx_period, *adx_threshold)),
+            ],
+            CombineMode::PrimaryConfirmed,
+        )),
+
+        DiscoveryStrategyType::WilliamsRStoch {
+            wr_period,
+            wr_overbought,
+            wr_oversold,
+            stoch_period,
+            stoch_overbought,
+            stoch_oversold,
+        } => Box::new(ComboSignalGenerator::new(
+            "Williams%R+Stoch".to_string(),
+            vec![
+                Box::new(WilliamsRSignalGenerator::new(*wr_period, *wr_overbought, *wr_oversold)),
+                Box::new(StochasticSignalGenerator::new(
+                    *stoch_period,
+                    *stoch_overbought,
+                    *stoch_oversold,
+                )),
+            ],
+            CombineMode::Unanimous,
         )),
 
         // Gabagool is handled separately in discovery.rs, not via SignalGenerator

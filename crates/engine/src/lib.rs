@@ -20,8 +20,8 @@ pub mod types;
 // Re-exports for convenience
 pub use api::BinanceClient;
 pub use discovery::{
-    run_discovery, DiscoveryProgress, DiscoveryRequest, DiscoveryResult, DiscoveryStatus,
-    DiscoveryStrategyType, SizingMode,
+    run_continuous_discovery, run_discovery, DiscoveryProgress, DiscoveryRequest, DiscoveryResult,
+    DiscoveryStatus, DiscoveryStrategyType, SizingMode,
 };
 pub use engine::BacktestEngine;
 pub use fees::{calculate_taker_fee, PolymarketFeeConfig};

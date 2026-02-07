@@ -14,9 +14,9 @@ use axum::{
 use chrono::Utc;
 use clap::{Parser, Subcommand};
 use engine::{
-    run_discovery, run_optimization, BinanceClient, DiscoveryProgress, DiscoveryRequest,
-    DiscoveryResult, DiscoveryStatus, OptimizeProgress, OptimizeRequest, OptimizeStatus,
-    SizingMode,
+    run_continuous_discovery, run_discovery, run_optimization, BinanceClient, DiscoveryProgress,
+    DiscoveryRequest, DiscoveryResult, DiscoveryStatus, OptimizeProgress, OptimizeRequest,
+    OptimizeStatus, SizingMode,
 };
 use persistence::repository::DiscoveryRepository;
 use rust_decimal::Decimal;
@@ -69,6 +69,9 @@ enum Commands {
         /// Optional JSON export path
         #[arg(long)]
         export: Option<String>,
+        /// Run continuously until Ctrl+C
+        #[arg(long)]
+        continuous: bool,
     },
 }
 
@@ -119,8 +122,9 @@ async fn main() -> anyhow::Result<()> {
             top_n,
             sizing,
             export,
+            continuous,
         } => {
-            cmd_run(symbols, days, top_n, sizing, export).await?;
+            cmd_run(symbols, days, top_n, sizing, export, continuous).await?;
         }
     }
 
@@ -168,6 +172,7 @@ async fn cmd_serve(host: &str, port: u16) -> anyhow::Result<()> {
         .route("/health", get(api_health))
         .route("/discover", post(api_start_discovery))
         .route("/discover/status", get(api_discovery_status))
+        .route("/discover/cancel", post(api_cancel_discovery))
         .route("/knowledge", get(api_knowledge_base))
         .route("/knowledge/stats", get(api_knowledge_stats))
         .route("/export", get(api_export))
@@ -189,6 +194,7 @@ async fn cmd_serve(host: &str, port: u16) -> anyhow::Result<()> {
     println!("  GET  /api/health              - Health check");
     println!("  POST /api/discover            - Start discovery scan");
     println!("  GET  /api/discover/status     - Poll discovery progress");
+    println!("  POST /api/discover/cancel     - Cancel running discovery");
     println!("  GET  /api/knowledge           - Knowledge base (paginated)");
     println!("  GET  /api/knowledge/stats     - Knowledge base stats");
     println!("  GET  /api/export              - Export results as JSON");
@@ -214,6 +220,7 @@ async fn cmd_run(
     top_n: usize,
     sizing: String,
     export: Option<String>,
+    continuous: bool,
 ) -> anyhow::Result<()> {
     println!("\n=== Poly-Discover v{} ===", APP_VERSION);
 
@@ -239,7 +246,16 @@ async fn cmd_run(
             symbols.join(", ")
         }
     );
-    println!("Days: {} | Sizing: {} | Top N: {}", days, sizing, top_n);
+    println!(
+        "Days: {} | Sizing: {} | Top N: {} | Mode: {}",
+        days,
+        sizing,
+        top_n,
+        if continuous { "CONTINUOUS" } else { "single" }
+    );
+    if continuous {
+        println!("Press Ctrl+C to stop");
+    }
     println!();
 
     let binance = Arc::new(BinanceClient::new());
@@ -261,13 +277,30 @@ async fn cmd_run(
         days,
         top_n: Some(top_n),
         sizing_mode: Some(sizing_mode),
+        continuous: Some(continuous),
     };
+
+    // Set up Ctrl+C handler for continuous mode
+    let progress_for_ctrlc = progress.clone();
+    tokio::spawn(async move {
+        tokio::signal::ctrl_c().await.ok();
+        info!("Ctrl+C received, requesting cancel...");
+        progress_for_ctrlc
+            .cancelled
+            .store(true, std::sync::atomic::Ordering::Relaxed);
+    });
 
     // Spawn discovery in background and monitor progress
     let progress_clone = progress.clone();
-    let discovery_handle = tokio::spawn(async move {
-        run_discovery(request, binance, progress_clone, db_pool).await;
-    });
+    let discovery_handle = if continuous {
+        tokio::spawn(async move {
+            run_continuous_discovery(request, binance, progress_clone, db_pool).await;
+        })
+    } else {
+        tokio::spawn(async move {
+            run_discovery(request, binance, progress_clone, db_pool).await;
+        })
+    };
 
     // Progress display loop
     loop {
@@ -287,27 +320,70 @@ async fn cmd_run(
             DiscoveryStatus::FetchingData => {
                 print!("\r  Fetching market data...                                      ");
             }
-            DiscoveryStatus::Phase1BroadScan | DiscoveryStatus::Phase2Refinement => {
-                let phase_label = if matches!(status, DiscoveryStatus::Phase1BroadScan) {
-                    "Phase 1: Broad Scan"
-                } else {
-                    "Phase 2: Refinement"
-                };
+            DiscoveryStatus::Phase1BroadScan
+            | DiscoveryStatus::Phase2Refinement
+            | DiscoveryStatus::Phase3Exploration => {
+                let current_cycle = progress
+                    .current_cycle
+                    .load(std::sync::atomic::Ordering::Relaxed);
+                let total_all = progress
+                    .total_tested_all_cycles
+                    .load(std::sync::atomic::Ordering::Relaxed);
+                let new_this_cycle = progress
+                    .total_new_this_cycle
+                    .load(std::sync::atomic::Ordering::Relaxed);
+                let best_score = progress
+                    .best_so_far
+                    .read()
+                    .unwrap()
+                    .first()
+                    .map(|r| r.composite_score)
+                    .unwrap_or_default();
+
                 let bar_len = 30;
                 let filled = (pct as usize * bar_len) / 100;
                 let empty = bar_len - filled;
                 let bar: String = "=".repeat(filled) + &" ".repeat(empty);
-                print!(
-                    "\r  {} [{}] {:.0}% ({}/{}, {} cached) — {}   ",
-                    phase_label, bar, pct, completed, total, skipped, phase
-                );
+
+                if continuous {
+                    print!(
+                        "\r  Cycle {} — {} [{}] {:.0}% ({}/{}, {} cached) — {}   ",
+                        current_cycle, phase, bar, pct, completed, total, skipped, phase
+                    );
+                    print!(
+                        "\n  Total: {} tested | {} new this cycle | Best: {:.1}           \x1b[1A",
+                        total_all, new_this_cycle, best_score
+                    );
+                } else {
+                    let phase_label = if matches!(status, DiscoveryStatus::Phase1BroadScan) {
+                        "Phase 1: Broad Scan"
+                    } else {
+                        "Phase 2: Refinement"
+                    };
+                    print!(
+                        "\r  {} [{}] {:.0}% ({}/{}, {} cached) — {}   ",
+                        phase_label, bar, pct, completed, total, skipped, phase
+                    );
+                }
             }
             DiscoveryStatus::Complete => {
-                println!(
-                    "\r  Complete! ({} computed, {} cached)                              ",
-                    completed - skipped,
-                    skipped
-                );
+                let total_all = progress
+                    .total_tested_all_cycles
+                    .load(std::sync::atomic::Ordering::Relaxed);
+                if continuous {
+                    println!(
+                        "\r  Complete! Total: {} tested ({} computed, {} cached)                              ",
+                        total_all,
+                        completed - skipped,
+                        skipped
+                    );
+                } else {
+                    println!(
+                        "\r  Complete! ({} computed, {} cached)                              ",
+                        completed - skipped,
+                        skipped
+                    );
+                }
                 break;
             }
             DiscoveryStatus::Error => {
@@ -328,10 +404,30 @@ async fn cmd_run(
     // Display results
     let results = progress.final_results.read().unwrap().clone();
     if results.is_empty() {
-        println!("\nNo results found.");
-        return Ok(());
+        // In continuous mode, also check best_so_far
+        let best = progress.best_so_far.read().unwrap().clone();
+        if best.is_empty() {
+            println!("\nNo results found.");
+            return Ok(());
+        }
+        print_results(&best, top_n);
+    } else {
+        print_results(&results, top_n);
     }
 
+    // Export if requested
+    if let Some(export_path) = export {
+        let results = progress.final_results.read().unwrap().clone();
+        let export_data = build_export_json(&results, top_n, None);
+        let json = serde_json::to_string_pretty(&export_data)?;
+        std::fs::write(&export_path, &json)?;
+        println!("\nResults exported to {}", export_path);
+    }
+
+    Ok(())
+}
+
+fn print_results(results: &[DiscoveryResult], top_n: usize) {
     println!("\nTop {} Results:", results.len().min(top_n));
     println!(
         "  {:>3}  {:<20} {:<10} {:>8} {:>8} {:>10} {:>7}",
@@ -350,16 +446,6 @@ async fn cmd_run(
             r.sharpe_ratio,
         );
     }
-
-    // Export if requested
-    if let Some(export_path) = export {
-        let export_data = build_export_json(&results, top_n, None);
-        let json = serde_json::to_string_pretty(&export_data)?;
-        std::fs::write(&export_path, &json)?;
-        println!("\nResults exported to {}", export_path);
-    }
-
-    Ok(())
 }
 
 // ============================================================================
@@ -388,9 +474,12 @@ async fn api_start_discovery(
         })));
     }
 
+    let is_continuous = request.continuous.unwrap_or(false);
+
     info!(
         symbols = ?request.symbols,
         days = request.days,
+        continuous = is_continuous,
         "Starting discovery agent"
     );
 
@@ -400,14 +489,34 @@ async fn api_start_discovery(
     let progress = state.discovery_progress.clone();
     let db_pool = Some(state.db.pool_clone());
 
-    tokio::spawn(async move {
-        run_discovery(request, binance, progress, db_pool).await;
-    });
+    if is_continuous {
+        tokio::spawn(async move {
+            run_continuous_discovery(request, binance, progress, db_pool).await;
+        });
+    } else {
+        tokio::spawn(async move {
+            run_discovery(request, binance, progress, db_pool).await;
+        });
+    }
 
     Ok(Json(serde_json::json!({
         "success": true,
-        "message": "Discovery agent started",
+        "message": if is_continuous { "Continuous discovery started" } else { "Discovery agent started" },
+        "continuous": is_continuous,
     })))
+}
+
+/// POST /api/discover/cancel — cancel running discovery
+async fn api_cancel_discovery(State(state): State<AppState>) -> Json<serde_json::Value> {
+    state
+        .discovery_progress
+        .cancelled
+        .store(true, std::sync::atomic::Ordering::Relaxed);
+    info!("Discovery cancel requested via API");
+    Json(serde_json::json!({
+        "success": true,
+        "message": "Cancel requested"
+    }))
 }
 
 /// GET /api/discover/status — poll discovery progress
@@ -429,6 +538,18 @@ async fn api_discovery_status(State(state): State<AppState>) -> Json<serde_json:
     let final_results = progress.final_results.read().unwrap().clone();
     let error = progress.error_message.read().unwrap().clone();
     let started_at = progress.started_at.read().unwrap().clone();
+    let current_cycle = progress
+        .current_cycle
+        .load(std::sync::atomic::Ordering::Relaxed);
+    let total_tested_all_cycles = progress
+        .total_tested_all_cycles
+        .load(std::sync::atomic::Ordering::Relaxed);
+    let total_new_this_cycle = progress
+        .total_new_this_cycle
+        .load(std::sync::atomic::Ordering::Relaxed);
+    let is_continuous = progress
+        .is_continuous
+        .load(std::sync::atomic::Ordering::Relaxed);
 
     let results = if matches!(status, DiscoveryStatus::Complete) {
         &final_results
@@ -449,6 +570,10 @@ async fn api_discovery_status(State(state): State<AppState>) -> Json<serde_json:
         "results": results,
         "error": error,
         "started_at": started_at,
+        "current_cycle": current_cycle,
+        "total_tested_all_cycles": total_tested_all_cycles,
+        "total_new_this_cycle": total_new_this_cycle,
+        "is_continuous": is_continuous,
     }))
 }
 

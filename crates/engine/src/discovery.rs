@@ -16,6 +16,7 @@ use rust_decimal::Decimal;
 use rust_decimal_macros::dec;
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
+use rand::Rng;
 use tracing::{info, warn};
 
 use crate::api::BinanceClient;
@@ -119,6 +120,49 @@ pub enum DiscoveryStrategyType {
         stoch_ob: f64,
         stoch_os: f64,
     },
+    // === New Singles (4) ===
+    Vwap {
+        period: usize,
+    },
+    Obv {
+        sma_period: usize,
+    },
+    WilliamsR {
+        period: usize,
+        overbought: f64,
+        oversold: f64,
+    },
+    Adx {
+        period: usize,
+        adx_threshold: f64,
+    },
+    // === New Combos (4) ===
+    VwapRsi {
+        vwap_period: usize,
+        rsi_period: usize,
+        rsi_overbought: f64,
+        rsi_oversold: f64,
+    },
+    ObvMacd {
+        obv_sma_period: usize,
+        macd_fast: usize,
+        macd_slow: usize,
+        macd_signal: usize,
+    },
+    AdxEma {
+        adx_period: usize,
+        adx_threshold: f64,
+        ema_fast: usize,
+        ema_slow: usize,
+    },
+    WilliamsRStoch {
+        wr_period: usize,
+        wr_overbought: f64,
+        wr_oversold: f64,
+        stoch_period: usize,
+        stoch_overbought: f64,
+        stoch_oversold: f64,
+    },
     // === Arbitrage (1) ===
     Gabagool {
         max_pair_cost: Decimal,
@@ -143,6 +187,14 @@ impl DiscoveryStrategyType {
             Self::MacdBollinger { .. } => "MACD+Bollinger",
             Self::TripleRsiMacdBb { .. } => "Triple:RSI+MACD+BB",
             Self::TripleEmaRsiStoch { .. } => "Triple:EMA+RSI+Stoch",
+            Self::Vwap { .. } => "VWAP",
+            Self::Obv { .. } => "OBV",
+            Self::WilliamsR { .. } => "Williams %R",
+            Self::Adx { .. } => "ADX",
+            Self::VwapRsi { .. } => "VWAP+RSI",
+            Self::ObvMacd { .. } => "OBV+MACD",
+            Self::AdxEma { .. } => "ADX+EMA",
+            Self::WilliamsRStoch { .. } => "Williams%R+Stoch",
             Self::Gabagool { .. } => "Gabagool",
         }
     }
@@ -170,6 +222,8 @@ pub struct DiscoveryRequest {
     pub days: u32,
     pub top_n: Option<usize>,
     pub sizing_mode: Option<SizingMode>,
+    #[serde(default)]
+    pub continuous: Option<bool>,
 }
 
 fn default_days() -> u32 {
@@ -207,6 +261,7 @@ pub enum DiscoveryStatus {
     FetchingData,
     Phase1BroadScan,
     Phase2Refinement,
+    Phase3Exploration,
     Complete,
     Error,
 }
@@ -225,6 +280,10 @@ pub struct DiscoveryProgress {
     pub final_results: RwLock<Vec<DiscoveryResult>>,
     pub error_message: RwLock<Option<String>>,
     pub started_at: RwLock<Option<String>>,
+    pub current_cycle: AtomicU32,
+    pub total_tested_all_cycles: AtomicU32,
+    pub total_new_this_cycle: AtomicU32,
+    pub is_continuous: AtomicBool,
 }
 
 impl DiscoveryProgress {
@@ -242,6 +301,10 @@ impl DiscoveryProgress {
             final_results: RwLock::new(Vec::new()),
             error_message: RwLock::new(None),
             started_at: RwLock::new(None),
+            current_cycle: AtomicU32::new(0),
+            total_tested_all_cycles: AtomicU32::new(0),
+            total_new_this_cycle: AtomicU32::new(0),
+            is_continuous: AtomicBool::new(false),
         }
     }
 
@@ -258,6 +321,10 @@ impl DiscoveryProgress {
         *self.final_results.write().unwrap() = Vec::new();
         *self.error_message.write().unwrap() = None;
         *self.started_at.write().unwrap() = Some(Utc::now().to_rfc3339());
+        self.current_cycle.store(0, Ordering::Relaxed);
+        self.total_tested_all_cycles.store(0, Ordering::Relaxed);
+        self.total_new_this_cycle.store(0, Ordering::Relaxed);
+        self.is_continuous.store(false, Ordering::Relaxed);
     }
 
     pub fn progress_pct(&self) -> f32 {
@@ -277,6 +344,7 @@ impl DiscoveryProgress {
             DiscoveryStatus::FetchingData
                 | DiscoveryStatus::Phase1BroadScan
                 | DiscoveryStatus::Phase2Refinement
+                | DiscoveryStatus::Phase3Exploration
         )
     }
 }
@@ -501,7 +569,114 @@ fn generate_phase1_grid() -> Vec<DiscoveryStrategyType> {
         }
     }
 
-    // 14. Gabagool: 4 mpc × 4 bo × 3 sm = 48
+    // 14. VWAP: 4 periods = 4
+    for &period in &[10usize, 20, 30, 50] {
+        grid.push(DiscoveryStrategyType::Vwap { period });
+    }
+
+    // 15. OBV: 4 sma_periods = 4
+    for &sma_period in &[10usize, 14, 20, 30] {
+        grid.push(DiscoveryStrategyType::Obv { sma_period });
+    }
+
+    // 16. Williams %R: 3 periods × 2 ob × 2 os = 12
+    for &period in &[7usize, 14, 21] {
+        for &ob in &[-15.0f64, -20.0] {
+            for &os in &[-80.0f64, -85.0] {
+                grid.push(DiscoveryStrategyType::WilliamsR {
+                    period,
+                    overbought: ob,
+                    oversold: os,
+                });
+            }
+        }
+    }
+
+    // 17. ADX: 3 periods × 3 thresholds = 9
+    for &period in &[7usize, 14, 21] {
+        for &threshold in &[20.0f64, 25.0, 30.0] {
+            grid.push(DiscoveryStrategyType::Adx {
+                period,
+                adx_threshold: threshold,
+            });
+        }
+    }
+
+    // 18. VWAP+RSI: 4 × 3 × 2 × 2 = 48
+    for &vp in &[10usize, 20, 30, 50] {
+        for &rp in &[9usize, 14, 21] {
+            for &rob in &[70.0, 80.0] {
+                for &ros in &[25.0, 30.0] {
+                    grid.push(DiscoveryStrategyType::VwapRsi {
+                        vwap_period: vp,
+                        rsi_period: rp,
+                        rsi_overbought: rob,
+                        rsi_oversold: ros,
+                    });
+                }
+            }
+        }
+    }
+
+    // 19. OBV+MACD: 4 × 3 × 3 × 2 = 72
+    for &obv_sma in &[10usize, 14, 20, 30] {
+        for &mf in &[8usize, 12, 5] {
+            for &ms in &[21usize, 26, 17] {
+                if mf < ms {
+                    for &msig in &[5usize, 9] {
+                        grid.push(DiscoveryStrategyType::ObvMacd {
+                            obv_sma_period: obv_sma,
+                            macd_fast: mf,
+                            macd_slow: ms,
+                            macd_signal: msig,
+                        });
+                    }
+                }
+            }
+        }
+    }
+
+    // 20. ADX+EMA: 3 × 3 × 3 × 3 = 81
+    for &ap in &[7usize, 14, 21] {
+        for &at in &[20.0f64, 25.0, 30.0] {
+            for &ef in &[8usize, 10, 13] {
+                for &es in &[21usize, 26, 50] {
+                    if ef < es {
+                        grid.push(DiscoveryStrategyType::AdxEma {
+                            adx_period: ap,
+                            adx_threshold: at,
+                            ema_fast: ef,
+                            ema_slow: es,
+                        });
+                    }
+                }
+            }
+        }
+    }
+
+    // 21. WilliamsR+Stoch: 3 × 2 × 2 × 3 × 2 × 2 = 144
+    for &wp in &[7usize, 14, 21] {
+        for &wob in &[-15.0f64, -20.0] {
+            for &wos in &[-80.0f64, -85.0] {
+                for &sp in &[5usize, 9, 14] {
+                    for &sob in &[80.0, 85.0] {
+                        for &sos in &[15.0, 20.0] {
+                            grid.push(DiscoveryStrategyType::WilliamsRStoch {
+                                wr_period: wp,
+                                wr_overbought: wob,
+                                wr_oversold: wos,
+                                stoch_period: sp,
+                                stoch_overbought: sob,
+                                stoch_oversold: sos,
+                            });
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    // 22. Gabagool: 4 mpc × 4 bo × 3 sm = 48
     for mpc in &[dec!(0.92), dec!(0.94), dec!(0.96), dec!(0.98)] {
         for bo in &[dec!(0.005), dec!(0.01), dec!(0.02), dec!(0.03)] {
             for sm in &[dec!(2), dec!(3), dec!(5)] {
@@ -540,6 +715,21 @@ struct OpenPosition {
     size: Decimal,
 }
 
+/// Estimate Polymarket probability from price change percentage.
+/// Maps price movement to a probability in [0.05, 0.95].
+/// At 0% change → p=0.50 (max fees). Large moves push p toward extremes (lower fees).
+fn estimate_poly_probability(entry_price: Decimal, current_price: Decimal) -> Decimal {
+    if entry_price <= Decimal::ZERO {
+        return dec!(0.50);
+    }
+    let hundred = dec!(100);
+    let change_pct = (current_price - entry_price) / entry_price * hundred;
+    // Convert change_pct to f64 for the calculation
+    let change_f64: f64 = change_pct.to_string().parse().unwrap_or(0.0);
+    let p_f64 = (0.5 + change_f64 * 0.05).clamp(0.05, 0.95);
+    Decimal::from_str_exact(&format!("{:.4}", p_f64)).unwrap_or(dec!(0.50))
+}
+
 fn run_generic_backtest(
     generator: &mut dyn SignalGenerator,
     klines: &[Kline],
@@ -549,7 +739,8 @@ fn run_generic_backtest(
     fee_config: &PolymarketFeeConfig,
 ) -> GenericBacktestResult {
     let hundred = dec!(100);
-    let poly_price = dec!(0.50); // Conservative: max fee at p=0.50
+    // Use first kline close as baseline for probability estimation
+    let baseline_price = klines.first().map(|k| k.close).unwrap_or(dec!(1));
     let mut equity = initial_capital;
     let mut peak_equity = equity;
     let mut max_drawdown_pct = Decimal::ZERO;
@@ -600,8 +791,9 @@ fn run_generic_backtest(
                     let position_value = equity * size_pct / hundred;
                     let shares = position_value / kline.close;
 
-                    // Entry fee
-                    let entry_fee = calculate_taker_fee(shares, poly_price, fee_config);
+                    // Entry fee — estimate probability from current price vs baseline
+                    let p_entry = estimate_poly_probability(baseline_price, kline.close);
+                    let entry_fee = calculate_taker_fee(shares, p_entry, fee_config);
                     equity -= entry_fee;
 
                     position = Some(OpenPosition {
@@ -613,7 +805,8 @@ fn run_generic_backtest(
             crate::strategy::Signal::Sell => {
                 if let Some(pos) = position.take() {
                     let pnl = (kline.close - pos.entry_price) * pos.size;
-                    let exit_fee = calculate_taker_fee(pos.size, poly_price, fee_config);
+                    let p_exit = estimate_poly_probability(baseline_price, kline.close);
+                    let exit_fee = calculate_taker_fee(pos.size, p_exit, fee_config);
 
                     let pnl_pct = if pos.entry_price > Decimal::ZERO {
                         (kline.close - pos.entry_price) / pos.entry_price * hundred
@@ -680,7 +873,8 @@ fn run_generic_backtest(
     if let Some(pos) = position.take() {
         if let Some(last) = klines.last() {
             let pnl = (last.close - pos.entry_price) * pos.size;
-            let exit_fee = calculate_taker_fee(pos.size, poly_price, fee_config);
+            let p_exit = estimate_poly_probability(baseline_price, last.close);
+            let exit_fee = calculate_taker_fee(pos.size, p_exit, fee_config);
             equity += pnl - exit_fee;
             trades.push(BacktestTrade {
                 entry_time: 0,
@@ -716,7 +910,10 @@ fn run_generic_backtest(
     let total_fees = {
         let mut fees = Decimal::ZERO;
         for trade in &trades {
-            fees += calculate_taker_fee(trade.size, poly_price, fee_config) * dec!(2);
+            let p_entry = estimate_poly_probability(baseline_price, trade.entry_price);
+            let p_exit = estimate_poly_probability(baseline_price, trade.exit_price);
+            fees += calculate_taker_fee(trade.size, p_entry, fee_config)
+                + calculate_taker_fee(trade.size, p_exit, fee_config);
         }
         fees
     };
@@ -928,7 +1125,100 @@ fn generate_refinement_grid(strategy: &DiscoveryStrategyType) -> Vec<DiscoverySt
                 }
             }
         }
-        // For combos and other types, just return the original (no refinement)
+        DiscoveryStrategyType::Stochastic {
+            period,
+            overbought,
+            oversold,
+        } => {
+            for dp in [-2i32, -1, 0, 1, 2] {
+                for dob in [-2.5f64, 0.0, 2.5] {
+                    for dos in [-2.5f64, 0.0, 2.5] {
+                        let p = (*period as i32 + dp).max(3) as usize;
+                        let ob = overbought + dob;
+                        let os = oversold + dos;
+                        if os > 0.0 && ob < 100.0 {
+                            variants.push(DiscoveryStrategyType::Stochastic {
+                                period: p,
+                                overbought: ob,
+                                oversold: os,
+                            });
+                        }
+                    }
+                }
+            }
+        }
+        DiscoveryStrategyType::AtrMeanReversion {
+            atr_period,
+            sma_period,
+            multiplier,
+        } => {
+            for da in [-2i32, 0, 2] {
+                for ds in [-3i32, 0, 3] {
+                    for dm in [-0.25f64, 0.0, 0.25] {
+                        let a = (*atr_period as i32 + da).max(3) as usize;
+                        let s = (*sma_period as i32 + ds).max(5) as usize;
+                        let m = multiplier + dm;
+                        if m > 0.5 {
+                            variants.push(DiscoveryStrategyType::AtrMeanReversion {
+                                atr_period: a,
+                                sma_period: s,
+                                multiplier: m,
+                            });
+                        }
+                    }
+                }
+            }
+        }
+        DiscoveryStrategyType::Vwap { period } => {
+            for dp in [-3i32, -1, 0, 1, 3] {
+                let p = (*period as i32 + dp).max(5) as usize;
+                variants.push(DiscoveryStrategyType::Vwap { period: p });
+            }
+        }
+        DiscoveryStrategyType::Obv { sma_period } => {
+            for dp in [-2i32, -1, 0, 1, 2] {
+                let p = (*sma_period as i32 + dp).max(5) as usize;
+                variants.push(DiscoveryStrategyType::Obv { sma_period: p });
+            }
+        }
+        DiscoveryStrategyType::WilliamsR {
+            period,
+            overbought,
+            oversold,
+        } => {
+            for dp in [-2i32, 0, 2] {
+                for dob in [-2.5f64, 0.0, 2.5] {
+                    for dos in [-2.5f64, 0.0, 2.5] {
+                        let p = (*period as i32 + dp).max(3) as usize;
+                        let ob = overbought + dob;
+                        let os = oversold + dos;
+                        if os < ob {
+                            variants.push(DiscoveryStrategyType::WilliamsR {
+                                period: p,
+                                overbought: ob,
+                                oversold: os,
+                            });
+                        }
+                    }
+                }
+            }
+        }
+        DiscoveryStrategyType::Adx {
+            period,
+            adx_threshold,
+        } => {
+            for dp in [-2i32, 0, 2] {
+                for dt in [-2.5f64, 0.0, 2.5] {
+                    let p = (*period as i32 + dp).max(3) as usize;
+                    let t = (adx_threshold + dt).max(10.0);
+                    variants.push(DiscoveryStrategyType::Adx {
+                        period: p,
+                        adx_threshold: t,
+                    });
+                }
+            }
+        }
+        // For combos, return the original (no refinement — too many params)
         other => {
             variants.push(other.clone());
         }
@@ -976,6 +1266,14 @@ fn result_to_record(
         DiscoveryStrategyType::MacdBollinger { .. } => "macd_bollinger",
         DiscoveryStrategyType::TripleRsiMacdBb { .. } => "triple_rsi_macd_bb",
         DiscoveryStrategyType::TripleEmaRsiStoch { .. } => "triple_ema_rsi_stoch",
+        DiscoveryStrategyType::Vwap { .. } => "vwap",
+        DiscoveryStrategyType::Obv { .. } => "obv",
+        DiscoveryStrategyType::WilliamsR { .. } => "williams_r",
+        DiscoveryStrategyType::Adx { .. } => "adx",
+        DiscoveryStrategyType::VwapRsi { .. } => "vwap_rsi",
+        DiscoveryStrategyType::ObvMacd { .. } => "obv_macd",
+        DiscoveryStrategyType::AdxEma { .. } => "adx_ema",
+        DiscoveryStrategyType::WilliamsRStoch { .. } => "williams_r_stoch",
         DiscoveryStrategyType::Gabagool { .. } => "gabagool",
     };
 
@@ -1491,6 +1789,1535 @@ fn update_best_so_far(
     *progress.best_so_far.write().unwrap() = best;
 }
 
+// ============================================================================
+// Continuous Discovery — Exploratory Grid Generation
+// ============================================================================
+
+/// Generate an expanding grid of strategy combinations based on the cycle number.
+/// - Cycle 0: Standard Phase 1 grid
+/// - Cycle 1: Fine interpolation (intermediate parameter values)
+/// - Cycle 2: Extended ranges (wider min/max bounds)
+/// - Cycle 3+: Random perturbations (growing number of random combos)
+fn generate_exploratory_grid(cycle: u32) -> Vec<DiscoveryStrategyType> {
+    let mut grid = Vec::new();
+
+    match cycle {
+        0 => {
+            grid = generate_phase1_grid();
+        }
+        1 => {
+            // Fine interpolation — intermediate values between Phase 1 grid points
+            // RSI
+            for &period in &[7usize, 11, 16, 18, 25] {
+                for &ob in &[67.5, 72.5, 77.5] {
+                    for &os in &[22.5, 27.5, 32.5] {
+                        if os < ob {
+                            grid.push(DiscoveryStrategyType::Rsi {
+                                period,
+                                overbought: ob,
+                                oversold: os,
+                            });
+                        }
+                    }
+                }
+            }
+            // Bollinger
+            for &period in &[12usize, 17, 22, 27] {
+                for &mult in &[1.75, 2.25, 2.75] {
+                    grid.push(DiscoveryStrategyType::BollingerBands {
+                        period,
+                        multiplier: mult,
+                    });
+                }
+            }
+            // MACD
+            for &fast in &[6usize, 10] {
+                for &slow in &[19usize, 23] {
+                    for &signal in &[7usize] {
+                        if fast < slow {
+                            grid.push(DiscoveryStrategyType::Macd { fast, slow, signal });
+                        }
+                    }
+                }
+            }
+            // EMA Crossover
+            for &fast in &[6usize, 9, 12] {
+                for &slow in &[23usize, 35, 40] {
+                    if fast < slow {
+                        grid.push(DiscoveryStrategyType::EmaCrossover {
+                            fast_period: fast,
+                            slow_period: slow,
+                        });
+                    }
+                }
+            }
+            // Stochastic
+            for &period in &[7usize, 12, 18] {
+                for &ob in &[77.5, 82.5] {
+                    for &os in &[17.5, 22.5] {
+                        grid.push(DiscoveryStrategyType::Stochastic {
+                            period,
+                            overbought: ob,
+                            oversold: os,
+                        });
+                    }
+                }
+            }
+            // ATR Mean Reversion
+            for &atr in &[10usize, 17] {
+                for &sma in &[15usize, 25, 40] {
+                    for &mult in &[1.25, 1.75, 2.25] {
+                        grid.push(DiscoveryStrategyType::AtrMeanReversion {
+                            atr_period: atr,
+                            sma_period: sma,
+                            multiplier: mult,
+                        });
+                    }
+                }
+            }
+            // VWAP
+            for &period in &[15usize, 25, 40] {
+                grid.push(DiscoveryStrategyType::Vwap { period });
+            }
+            // OBV
+            for &sma in &[12usize, 17, 25] {
+                grid.push(DiscoveryStrategyType::Obv { sma_period: sma });
+            }
+            // Williams %R
+            for &period in &[10usize, 17] {
+                for &ob in &[-17.5f64, -22.5] {
+                    for &os in &[-77.5f64, -82.5] {
+                        grid.push(DiscoveryStrategyType::WilliamsR {
+                            period,
+                            overbought: ob,
+                            oversold: os,
+                        });
+                    }
+                }
+            }
+            // ADX
+            for &period in &[10usize, 17] {
+                for &threshold in &[22.5f64, 27.5] {
+                    grid.push(DiscoveryStrategyType::Adx {
+                        period,
+                        adx_threshold: threshold,
+                    });
+                }
+            }
+            // Combos — fine interpolation
+            for &rp in &[11usize, 17] {
+                for &rob in &[72.5, 77.5] {
+                    for &ros in &[22.5, 27.5] {
+                        for &bp in &[17usize, 22] {
+                            for &bm in &[2.25] {
+                                grid.push(DiscoveryStrategyType::RsiBollinger {
+                                    rsi_period: rp,
+                                    rsi_ob: rob,
+                                    rsi_os: ros,
+                                    bb_period: bp,
+                                    bb_mult: bm,
+                                });
+                            }
+                        }
+                    }
+                }
+            }
+            for &mf in &[10usize] {
+                for &ms in &[23usize] {
+                    for &msig in &[7usize] {
+                        for &rp in &[11usize] {
+                            for &rob in &[72.5, 77.5] {
+                                grid.push(DiscoveryStrategyType::MacdRsi {
+                                    macd_fast: mf,
+                                    macd_slow: ms,
+                                    macd_signal: msig,
+                                    rsi_period: rp,
+                                    rsi_ob: rob,
+                                    rsi_os: 27.5,
+                                });
+                            }
+                        }
+                    }
+                }
+            }
+            // VWAP+RSI
+            for &vp in &[15usize, 25, 40] {
+                for &rp in &[11usize, 17] {
+                    for &rob in &[72.5, 77.5] {
+                        grid.push(DiscoveryStrategyType::VwapRsi {
+                            vwap_period: vp,
+                            rsi_period: rp,
+                            rsi_overbought: rob,
+                            rsi_oversold: 27.5,
+                        });
+                    }
+                }
+            }
+            // OBV+MACD
+            for &obv_sma in &[12usize, 17, 25] {
+                for &mf in &[10usize] {
+                    for &ms in &[23usize] {
+                        for &msig in &[7usize] {
+                            if mf < ms {
+                                grid.push(DiscoveryStrategyType::ObvMacd {
+                                    obv_sma_period: obv_sma,
+                                    macd_fast: mf,
+                                    macd_slow: ms,
+                                    macd_signal: msig,
+                                });
+                            }
+                        }
+                    }
+                }
+            }
+            // ADX+EMA
+            for &ap in &[10usize, 17] {
+                for &at in &[22.5f64, 27.5] {
+                    for &ef in &[9usize, 11] {
+                        for &es in &[23usize, 35] {
+                            if ef < es {
+                                grid.push(DiscoveryStrategyType::AdxEma {
+                                    adx_period: ap,
+                                    adx_threshold: at,
+                                    ema_fast: ef,
+                                    ema_slow: es,
+                                });
+                            }
+                        }
+                    }
+                }
+            }
+            // WilliamsR+Stoch
+            for &wp in &[10usize, 17] {
+                for &wob in &[-17.5f64] {
+                    for &wos in &[-82.5f64] {
+                        for &sp in &[7usize, 11] {
+                            for &sob in &[82.5] {
+                                for &sos in &[17.5] {
+                                    grid.push(DiscoveryStrategyType::WilliamsRStoch {
+                                        wr_period: wp,
+                                        wr_overbought: wob,
+                                        wr_oversold: wos,
+                                        stoch_period: sp,
+                                        stoch_overbought: sob,
+                                        stoch_oversold: sos,
+                                    });
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+            // Gabagool fine
+            for mpc in &[dec!(0.93), dec!(0.95), dec!(0.97)] {
+                for bo in &[dec!(0.007), dec!(0.015), dec!(0.025)] {
+                    for sm in &[dec!(2.5), dec!(4)] {
+                        grid.push(DiscoveryStrategyType::Gabagool {
+                            max_pair_cost: *mpc,
+                            bid_offset: *bo,
+                            spread_multiplier: *sm,
+                        });
+                    }
+                }
+            }
+        }
+        2 => {
+            // Extended ranges — wider parameter bounds
+            // RSI extended
+            for &period in &[3usize, 4, 35, 40, 50] {
+                for &ob in &[60.0, 85.0, 90.0] {
+                    for &os in &[10.0, 15.0, 40.0] {
+                        if os < ob {
+                            grid.push(DiscoveryStrategyType::Rsi {
+                                period,
+                                overbought: ob,
+                                oversold: os,
+                            });
+                        }
+                    }
+                }
+            }
+            // Bollinger extended
+            for &period in &[5usize, 7, 35, 40, 50] {
+                for &mult in &[1.0, 1.25, 3.5, 4.0] {
+                    grid.push(DiscoveryStrategyType::BollingerBands {
+                        period,
+                        multiplier: mult,
+                    });
+                }
+            }
+            // MACD extended
+            for &fast in &[3usize, 4, 15] {
+                for &slow in &[30usize, 35, 40] {
+                    for &signal in &[3usize, 12, 15] {
+                        if fast < slow {
+                            grid.push(DiscoveryStrategyType::Macd { fast, slow, signal });
+                        }
+                    }
+                }
+            }
+            // EMA extended
+            for &fast in &[3usize, 4, 18, 20] {
+                for &slow in &[35usize, 60, 80, 100] {
+                    if fast < slow {
+                        grid.push(DiscoveryStrategyType::EmaCrossover {
+                            fast_period: fast,
+                            slow_period: slow,
+                        });
+                    }
+                }
+            }
+            // Stochastic extended
+            for &period in &[3usize, 4, 25, 30] {
+                for &ob in &[70.0, 90.0] {
+                    for &os in &[10.0, 30.0] {
+                        grid.push(DiscoveryStrategyType::Stochastic {
+                            period,
+                            overbought: ob,
+                            oversold: os,
+                        });
+                    }
+                }
+            }
+            // ATR extended
+            for &atr in &[5usize, 10, 28, 35] {
+                for &sma in &[7usize, 60, 80] {
+                    for &mult in &[0.75, 1.0, 2.5, 3.0] {
+                        grid.push(DiscoveryStrategyType::AtrMeanReversion {
+                            atr_period: atr,
+                            sma_period: sma,
+                            multiplier: mult,
+                        });
+                    }
+                }
+            }
+            // VWAP extended
+            for &period in &[5usize, 7, 60, 80, 100] {
+                grid.push(DiscoveryStrategyType::Vwap { period });
+            }
+            // OBV extended
+            for &sma in &[5usize, 7, 35, 40, 50] {
+                grid.push(DiscoveryStrategyType::Obv { sma_period: sma });
+            }
+            // Williams %R extended
+            for &period in &[3usize, 5, 28, 35] {
+                for &ob in &[-10.0f64, -25.0, -30.0] {
+                    for &os in &[-70.0f64, -75.0, -90.0] {
+                        grid.push(DiscoveryStrategyType::WilliamsR {
+                            period,
+                            overbought: ob,
+                            oversold: os,
+                        });
+                    }
+                }
+            }
+            // ADX extended
+            for &period in &[5usize, 10, 28, 35] {
+                for &threshold in &[15.0f64, 35.0, 40.0] {
+                    grid.push(DiscoveryStrategyType::Adx {
+                        period,
+                        adx_threshold: threshold,
+                    });
+                }
+            }
+            // Gabagool extended
+            for mpc in &[dec!(0.85), dec!(0.88), dec!(0.90), dec!(0.99)] {
+                for bo in &[dec!(0.002), dec!(0.04), dec!(0.05)] {
+                    for sm in &[dec!(1), dec!(1.5), dec!(6), dec!(8)] {
+                        grid.push(DiscoveryStrategyType::Gabagool {
+                            max_pair_cost: *mpc,
+                            bid_offset: *bo,
+                            spread_multiplier: *sm,
+                        });
+                    }
+                }
+            }
+        }
+        _ => {
+            // Cycle 3+: Random perturbations
+            let count = 500 + (cycle - 3) as usize * 200;
+            let mut rng = rand::thread_rng();
+
+            for _ in 0..count {
+                let strategy_idx = rng.gen_range(0..22);
+                match strategy_idx {
+                    0 => grid.push(DiscoveryStrategyType::Rsi {
+                        period: rng.gen_range(3..=50),
+                        overbought: rng.gen_range(55.0..=90.0),
+                        oversold: rng.gen_range(10.0..=45.0),
+                    }),
+                    1 => grid.push(DiscoveryStrategyType::BollingerBands {
+                        period: rng.gen_range(5..=50),
+                        multiplier: rng.gen_range(0.5..=4.0),
+                    }),
+                    2 => {
+                        let fast = rng.gen_range(3..=15);
+                        let slow = rng.gen_range((fast + 2)..=40);
+                        grid.push(DiscoveryStrategyType::Macd {
+                            fast,
+                            slow,
+                            signal: rng.gen_range(2..=15),
+                        });
+                    }
+                    3 => {
+                        let fast = rng.gen_range(3..=20);
+                        let slow = rng.gen_range((fast + 2)..=100);
+                        grid.push(DiscoveryStrategyType::EmaCrossover {
+                            fast_period: fast,
+                            slow_period: slow,
+                        });
+                    }
+                    4 => grid.push(DiscoveryStrategyType::Stochastic {
+                        period: rng.gen_range(3..=30),
+                        overbought: rng.gen_range(65.0..=95.0),
+                        oversold: rng.gen_range(5.0..=35.0),
+                    }),
+                    5 => grid.push(DiscoveryStrategyType::AtrMeanReversion {
+                        atr_period: rng.gen_range(3..=35),
+                        sma_period: rng.gen_range(5..=80),
+                        multiplier: rng.gen_range(0.5..=3.5),
+                    }),
+                    6 => grid.push(DiscoveryStrategyType::Vwap {
+                        period: rng.gen_range(5..=100),
+                    }),
+                    7 => grid.push(DiscoveryStrategyType::Obv {
+                        sma_period: rng.gen_range(5..=50),
+                    }),
+                    8 => grid.push(DiscoveryStrategyType::WilliamsR {
+                        period: rng.gen_range(3..=35),
+                        overbought: rng.gen_range(-30.0..=-5.0),
+                        oversold: rng.gen_range(-95.0..=-65.0),
+                    }),
+                    9 => grid.push(DiscoveryStrategyType::Adx {
+                        period: rng.gen_range(5..=35),
+                        adx_threshold: rng.gen_range(10.0..=45.0),
+                    }),
+                    10 => grid.push(DiscoveryStrategyType::RsiBollinger {
+                        rsi_period: rng.gen_range(5..=30),
+                        rsi_ob: rng.gen_range(60.0..=85.0),
+                        rsi_os: rng.gen_range(15.0..=40.0),
+                        bb_period: rng.gen_range(10..=35),
+                        bb_mult: rng.gen_range(1.0..=3.5),
+                    }),
+                    11 => {
+                        let mf = rng.gen_range(3..=15);
+                        let ms = rng.gen_range((mf + 2)..=35);
+                        grid.push(DiscoveryStrategyType::MacdRsi {
+                            macd_fast: mf,
+                            macd_slow: ms,
+                            macd_signal: rng.gen_range(2..=12),
+                            rsi_period: rng.gen_range(5..=25),
+                            rsi_ob: rng.gen_range(60.0..=85.0),
+                            rsi_os: rng.gen_range(15.0..=40.0),
+                        });
+                    }
+                    12 => {
+                        let ef = rng.gen_range(3..=18);
+                        let es = rng.gen_range((ef + 2)..=60);
+                        grid.push(DiscoveryStrategyType::EmaRsi {
+                            ema_fast: ef,
+                            ema_slow: es,
+                            rsi_period: rng.gen_range(5..=25),
+                            rsi_ob: rng.gen_range(60.0..=85.0),
+                            rsi_os: rng.gen_range(15.0..=40.0),
+                        });
+                    }
+                    13 => grid.push(DiscoveryStrategyType::StochRsi {
+                        stoch_period: rng.gen_range(5..=25),
+                        stoch_ob: rng.gen_range(70.0..=90.0),
+                        stoch_os: rng.gen_range(10.0..=30.0),
+                        rsi_period: rng.gen_range(5..=25),
+                        rsi_ob: rng.gen_range(60.0..=85.0),
+                        rsi_os: rng.gen_range(15.0..=40.0),
+                    }),
+                    14 => {
+                        let mf = rng.gen_range(3..=15);
+                        let ms = rng.gen_range((mf + 2)..=35);
+                        grid.push(DiscoveryStrategyType::MacdBollinger {
+                            macd_fast: mf,
+                            macd_slow: ms,
+                            macd_signal: rng.gen_range(2..=12),
+                            bb_period: rng.gen_range(10..=35),
+                            bb_mult: rng.gen_range(1.0..=3.5),
+                        });
+                    }
+                    15 => {
+                        let mf = rng.gen_range(3..=15);
+                        let ms = rng.gen_range((mf + 2)..=35);
+                        grid.push(DiscoveryStrategyType::TripleRsiMacdBb {
+                            rsi_period: rng.gen_range(5..=25),
+                            rsi_ob: rng.gen_range(60.0..=85.0),
+                            rsi_os: rng.gen_range(15.0..=40.0),
+                            macd_fast: mf,
+                            macd_slow: ms,
+                            macd_signal: rng.gen_range(2..=12),
+                            bb_period: rng.gen_range(10..=35),
+                            bb_mult: rng.gen_range(1.0..=3.5),
+                        });
+                    }
+                    16 => {
+                        let ef = rng.gen_range(3..=18);
+                        let es = rng.gen_range((ef + 2)..=60);
+                        grid.push(DiscoveryStrategyType::TripleEmaRsiStoch {
+                            ema_fast: ef,
+                            ema_slow: es,
+                            rsi_period: rng.gen_range(5..=25),
+                            rsi_ob: rng.gen_range(60.0..=85.0),
+                            rsi_os: rng.gen_range(15.0..=40.0),
+                            stoch_period: rng.gen_range(5..=25),
+                            stoch_ob: rng.gen_range(70.0..=90.0),
+                            stoch_os: rng.gen_range(10.0..=30.0),
+                        });
+                    }
+                    17 => grid.push(DiscoveryStrategyType::VwapRsi {
+                        vwap_period: rng.gen_range(5..=80),
+                        rsi_period: rng.gen_range(5..=25),
+                        rsi_overbought: rng.gen_range(60.0..=85.0),
+                        rsi_oversold: rng.gen_range(15.0..=40.0),
+                    }),
+                    18 => {
+                        let mf = rng.gen_range(3..=15);
+                        let ms = rng.gen_range((mf + 2)..=35);
+                        grid.push(DiscoveryStrategyType::ObvMacd {
+                            obv_sma_period: rng.gen_range(5..=40),
+                            macd_fast: mf,
+                            macd_slow: ms,
+                            macd_signal: rng.gen_range(2..=12),
+                        });
+                    }
+                    19 => {
+                        let ef = rng.gen_range(3..=20);
+                        let es = rng.gen_range((ef + 2)..=60);
+                        grid.push(DiscoveryStrategyType::AdxEma {
+                            adx_period: rng.gen_range(5..=35),
+                            adx_threshold: rng.gen_range(10.0..=45.0),
+                            ema_fast: ef,
+                            ema_slow: es,
+                        });
+                    }
+                    20 => grid.push(DiscoveryStrategyType::WilliamsRStoch {
+                        wr_period: rng.gen_range(3..=30),
+                        wr_overbought: rng.gen_range(-30.0..=-5.0),
+                        wr_oversold: rng.gen_range(-95.0..=-65.0),
+                        stoch_period: rng.gen_range(3..=25),
+                        stoch_overbought: rng.gen_range(70.0..=95.0),
+                        stoch_oversold: rng.gen_range(5.0..=30.0),
+                    }),
+                    _ => {
+                        let mpc_f = rng.gen_range(0.85..=0.99);
+                        let bo_f = rng.gen_range(0.001..=0.05);
+                        let sm_f = rng.gen_range(1.0..=8.0);
+                        grid.push(DiscoveryStrategyType::Gabagool {
+                            max_pair_cost: Decimal::from_str_exact(&format!("{:.3}", mpc_f))
+                                .unwrap_or(dec!(0.95)),
+                            bid_offset: Decimal::from_str_exact(&format!("{:.4}", bo_f))
+                                .unwrap_or(dec!(0.01)),
+                            spread_multiplier: Decimal::from_str_exact(&format!("{:.1}", sm_f))
+                                .unwrap_or(dec!(3)),
+                        });
+                    }
+                }
+            }
+        }
+    }
+
+    grid
+}
+
+// ============================================================================
+// ML-Guided Exploration (Evolutionary Algorithm)
+// ============================================================================
+
+/// Generate an ML-guided grid using evolutionary strategies:
+/// - 60% exploitation: mutations around top performers
+/// - 20% crossover: parameter mixing between good results
+/// - 20% exploration: pure random for diversity
+fn generate_ml_guided_grid(
+    top_results: &[DiscoveryResult],
+    cycle: u32,
+) -> Vec<DiscoveryStrategyType> {
+    let total_budget = (300 + cycle as usize * 50).min(1000);
+    let exploit_budget = total_budget * 60 / 100;
+    let crossover_budget = total_budget * 20 / 100;
+    let explore_budget = total_budget - exploit_budget - crossover_budget;
+
+    let mut grid = Vec::with_capacity(total_budget);
+    let mut rng = rand::thread_rng();
+
+    // --- 1. Exploitation: mutate top performers ---
+    // Sort by composite_score descending, take top 30
+    let mut sorted = top_results.to_vec();
+    sorted.sort_by(|a, b| b.composite_score.cmp(&a.composite_score));
+    let top_n = sorted.iter().take(30).collect::<Vec<_>>();
+
+    if !top_n.is_empty() {
+        let mutations_per = (exploit_budget / top_n.len()).max(1);
+        for result in &top_n {
+            for _ in 0..mutations_per {
+                if grid.len() >= exploit_budget {
+                    break;
+                }
+                if let Some(mutated) = mutate_strategy(&result.strategy_type, &mut rng) {
+                    grid.push(mutated);
+                }
+            }
+        }
+    }
+
+    // Pad exploitation budget if not enough top results
+    while grid.len() < exploit_budget {
+        if let Some(parent) = top_n.first() {
+            if let Some(mutated) = mutate_strategy(&parent.strategy_type, &mut rng) {
+                grid.push(mutated);
+            } else {
+                break;
+            }
+        } else {
+            break;
+        }
+    }
+
+    // --- 2. Crossover: mix parameters from pairs of good results ---
+    let crossover_start = grid.len();
+    if top_n.len() >= 2 {
+        for _ in 0..crossover_budget {
+            let idx_a = rng.gen_range(0..top_n.len().min(15));
+            let idx_b = rng.gen_range(0..top_n.len().min(15));
+            if idx_a == idx_b {
+                continue;
+            }
+            if let Some(child) = crossover_strategies(
+                &top_n[idx_a].strategy_type,
+                &top_n[idx_b].strategy_type,
+                &mut rng,
+            ) {
+                grid.push(child);
+            }
+        }
+    }
+
+    let crossover_count = grid.len() - crossover_start;
+
+    // --- 3. Exploration: pure random ---
+    let explore_start = grid.len();
+    let random_grid = generate_random_strategies(explore_budget, &mut rng);
+    grid.extend(random_grid);
+    let explore_count = grid.len() - explore_start;
+
+    info!(
+        "ML-guided grid: {} exploitation, {} crossover, {} exploration (total {})",
+        crossover_start,
+        crossover_count,
+        explore_count,
+        grid.len()
+    );
+
+    grid
+}
+
+fn perturb_usize(val: usize, rng: &mut impl rand::Rng) -> usize {
+    let factor = 1.0 + rng.gen_range(-0.15..=0.15);
+    ((val as f64 * factor).round() as usize).max(3)
+}
+
+fn perturb_f64(val: f64, rng: &mut impl rand::Rng) -> f64 {
+    let factor = 1.0 + rng.gen_range(-0.15..=0.15);
+    val * factor
+}
+
+fn perturb_decimal(val: Decimal, rng: &mut impl rand::Rng) -> Decimal {
+    let factor = 1.0 + rng.gen_range(-0.15f64..=0.15);
+    let val_f: f64 = val.to_string().parse().unwrap_or(1.0);
+    Decimal::from_str_exact(&format!("{:.4}", val_f * factor)).unwrap_or(val)
+}
+
+/// Mutate a strategy by perturbing each numeric parameter by ±5-15%
+fn mutate_strategy(
+    strategy: &DiscoveryStrategyType,
+    rng: &mut impl rand::Rng,
+) -> Option<DiscoveryStrategyType> {
+
+    Some(match strategy {
+        DiscoveryStrategyType::Rsi { period, overbought, oversold } => {
+            let ob = perturb_f64(*overbought, rng).clamp(55.0, 90.0);
+            let os = perturb_f64(*oversold, rng).clamp(10.0, 45.0);
+            if os >= ob { return None; }
+            DiscoveryStrategyType::Rsi {
+                period: perturb_usize(*period, rng),
+                overbought: ob,
+                oversold: os,
+            }
+        }
+        DiscoveryStrategyType::BollingerBands { period, multiplier } => {
+            DiscoveryStrategyType::BollingerBands {
+                period: perturb_usize(*period, rng),
+                multiplier: perturb_f64(*multiplier, rng).clamp(0.5, 4.0),
+            }
+        }
+        DiscoveryStrategyType::Macd { fast, slow, signal } => {
+            let f = perturb_usize(*fast, rng);
+            let s = perturb_usize(*slow, rng);
+            if f >= s { return None; }
+            DiscoveryStrategyType::Macd {
+                fast: f,
+                slow: s,
+                signal: perturb_usize(*signal, rng),
+            }
+        }
+        DiscoveryStrategyType::EmaCrossover { fast_period, slow_period } => {
+            let f = perturb_usize(*fast_period, rng);
+            let s = perturb_usize(*slow_period, rng);
+            if f >= s { return None; }
+            DiscoveryStrategyType::EmaCrossover {
+                fast_period: f,
+                slow_period: s,
+            }
+        }
+        DiscoveryStrategyType::Stochastic { period, overbought, oversold } => {
+            DiscoveryStrategyType::Stochastic {
+                period: perturb_usize(*period, rng),
+                overbought: perturb_f64(*overbought, rng).clamp(65.0, 95.0),
+                oversold: perturb_f64(*oversold, rng).clamp(5.0, 35.0),
+            }
+        }
+        DiscoveryStrategyType::AtrMeanReversion { atr_period, sma_period, multiplier } => {
+            DiscoveryStrategyType::AtrMeanReversion {
+                atr_period: perturb_usize(*atr_period, rng),
+                sma_period: perturb_usize(*sma_period, rng),
+                multiplier: perturb_f64(*multiplier, rng).clamp(0.5, 3.5),
+            }
+        }
+        DiscoveryStrategyType::Vwap { period } => {
+            DiscoveryStrategyType::Vwap {
+                period: perturb_usize(*period, rng),
+            }
+        }
+        DiscoveryStrategyType::Obv { sma_period } => {
+            DiscoveryStrategyType::Obv {
+                sma_period: perturb_usize(*sma_period, rng),
+            }
+        }
+        DiscoveryStrategyType::WilliamsR { period, overbought, oversold } => {
+            let ob = perturb_f64(*overbought, rng).clamp(-30.0, -5.0);
+            let os = perturb_f64(*oversold, rng).clamp(-95.0, -65.0);
+            if os >= ob { return None; }
+            DiscoveryStrategyType::WilliamsR {
+                period: perturb_usize(*period, rng),
+                overbought: ob,
+                oversold: os,
+            }
+        }
+        DiscoveryStrategyType::Adx { period, adx_threshold } => {
+            DiscoveryStrategyType::Adx {
+                period: perturb_usize(*period, rng),
+                adx_threshold: perturb_f64(*adx_threshold, rng).clamp(10.0, 45.0),
+            }
+        }
+        DiscoveryStrategyType::RsiBollinger { rsi_period, rsi_ob, rsi_os, bb_period, bb_mult } => {
+            let ob = perturb_f64(*rsi_ob, rng).clamp(60.0, 85.0);
+            let os = perturb_f64(*rsi_os, rng).clamp(15.0, 40.0);
+            if os >= ob { return None; }
+            DiscoveryStrategyType::RsiBollinger {
+                rsi_period: perturb_usize(*rsi_period, rng),
+                rsi_ob: ob,
+                rsi_os: os,
+                bb_period: perturb_usize(*bb_period, rng),
+                bb_mult: perturb_f64(*bb_mult, rng).clamp(1.0, 3.5),
+            }
+        }
+        DiscoveryStrategyType::MacdRsi { macd_fast, macd_slow, macd_signal, rsi_period, rsi_ob, rsi_os } => {
+            let mf = perturb_usize(*macd_fast, rng);
+            let ms = perturb_usize(*macd_slow, rng);
+            if mf >= ms { return None; }
+            let ob = perturb_f64(*rsi_ob, rng).clamp(60.0, 85.0);
+            let os = perturb_f64(*rsi_os, rng).clamp(15.0, 40.0);
+            if os >= ob { return None; }
+            DiscoveryStrategyType::MacdRsi {
+                macd_fast: mf,
+                macd_slow: ms,
+                macd_signal: perturb_usize(*macd_signal, rng),
+                rsi_period: perturb_usize(*rsi_period, rng),
+                rsi_ob: ob,
+                rsi_os: os,
+            }
+        }
+        DiscoveryStrategyType::EmaRsi { ema_fast, ema_slow, rsi_period, rsi_ob, rsi_os } => {
+            let ef = perturb_usize(*ema_fast, rng);
+            let es = perturb_usize(*ema_slow, rng);
+            if ef >= es { return None; }
+            let ob = perturb_f64(*rsi_ob, rng).clamp(60.0, 85.0);
+            let os = perturb_f64(*rsi_os, rng).clamp(15.0, 40.0);
+            if os >= ob { return None; }
+            DiscoveryStrategyType::EmaRsi {
+                ema_fast: ef,
+                ema_slow: es,
+                rsi_period: perturb_usize(*rsi_period, rng),
+                rsi_ob: ob,
+                rsi_os: os,
+            }
+        }
+        DiscoveryStrategyType::StochRsi { stoch_period, stoch_ob, stoch_os, rsi_period, rsi_ob, rsi_os } => {
+            let rob = perturb_f64(*rsi_ob, rng).clamp(60.0, 85.0);
+            let ros = perturb_f64(*rsi_os, rng).clamp(15.0, 40.0);
+            if ros >= rob { return None; }
+            DiscoveryStrategyType::StochRsi {
+                stoch_period: perturb_usize(*stoch_period, rng),
+                stoch_ob: perturb_f64(*stoch_ob, rng).clamp(70.0, 90.0),
+                stoch_os: perturb_f64(*stoch_os, rng).clamp(10.0, 30.0),
+                rsi_period: perturb_usize(*rsi_period, rng),
+                rsi_ob: rob,
+                rsi_os: ros,
+            }
+        }
+        DiscoveryStrategyType::MacdBollinger { macd_fast, macd_slow, macd_signal, bb_period, bb_mult } => {
+            let mf = perturb_usize(*macd_fast, rng);
+            let ms = perturb_usize(*macd_slow, rng);
+            if mf >= ms { return None; }
+            DiscoveryStrategyType::MacdBollinger {
+                macd_fast: mf,
+                macd_slow: ms,
+                macd_signal: perturb_usize(*macd_signal, rng),
+                bb_period: perturb_usize(*bb_period, rng),
+                bb_mult: perturb_f64(*bb_mult, rng).clamp(1.0, 3.5),
+            }
+        }
+        DiscoveryStrategyType::TripleRsiMacdBb { rsi_period, rsi_ob, rsi_os, macd_fast, macd_slow, macd_signal, bb_period, bb_mult } => {
+            let mf = perturb_usize(*macd_fast, rng);
+            let ms = perturb_usize(*macd_slow, rng);
+            if mf >= ms { return None; }
+            let ob = perturb_f64(*rsi_ob, rng).clamp(60.0, 85.0);
+            let os = perturb_f64(*rsi_os, rng).clamp(15.0, 40.0);
+            if os >= ob { return None; }
+            DiscoveryStrategyType::TripleRsiMacdBb {
+                rsi_period: perturb_usize(*rsi_period, rng),
+                rsi_ob: ob,
+                rsi_os: os,
+                macd_fast: mf,
+                macd_slow: ms,
+                macd_signal: perturb_usize(*macd_signal, rng),
+                bb_period: perturb_usize(*bb_period, rng),
+                bb_mult: perturb_f64(*bb_mult, rng).clamp(1.0, 3.5),
+            }
+        }
+        DiscoveryStrategyType::TripleEmaRsiStoch { ema_fast, ema_slow, rsi_period, rsi_ob, rsi_os, stoch_period, stoch_ob, stoch_os } => {
+            let ef = perturb_usize(*ema_fast, rng);
+            let es = perturb_usize(*ema_slow, rng);
+            if ef >= es { return None; }
+            let rob = perturb_f64(*rsi_ob, rng).clamp(60.0, 85.0);
+            let ros = perturb_f64(*rsi_os, rng).clamp(15.0, 40.0);
+            if ros >= rob { return None; }
+            DiscoveryStrategyType::TripleEmaRsiStoch {
+                ema_fast: ef,
+                ema_slow: es,
+                rsi_period: perturb_usize(*rsi_period, rng),
+                rsi_ob: rob,
+                rsi_os: ros,
+                stoch_period: perturb_usize(*stoch_period, rng),
+                stoch_ob: perturb_f64(*stoch_ob, rng).clamp(70.0, 90.0),
+                stoch_os: perturb_f64(*stoch_os, rng).clamp(10.0, 30.0),
+            }
+        }
+        DiscoveryStrategyType::VwapRsi { vwap_period, rsi_period, rsi_overbought, rsi_oversold } => {
+            let ob = perturb_f64(*rsi_overbought, rng).clamp(60.0, 85.0);
+            let os = perturb_f64(*rsi_oversold, rng).clamp(15.0, 40.0);
+            if os >= ob { return None; }
+            DiscoveryStrategyType::VwapRsi {
+                vwap_period: perturb_usize(*vwap_period, rng),
+                rsi_period: perturb_usize(*rsi_period, rng),
+                rsi_overbought: ob,
+                rsi_oversold: os,
+            }
+        }
+        DiscoveryStrategyType::ObvMacd { obv_sma_period, macd_fast, macd_slow, macd_signal } => {
+            let mf = perturb_usize(*macd_fast, rng);
+            let ms = perturb_usize(*macd_slow, rng);
+            if mf >= ms { return None; }
+            DiscoveryStrategyType::ObvMacd {
+                obv_sma_period: perturb_usize(*obv_sma_period, rng),
+                macd_fast: mf,
+                macd_slow: ms,
+                macd_signal: perturb_usize(*macd_signal, rng),
+            }
+        }
+        DiscoveryStrategyType::AdxEma { adx_period, adx_threshold, ema_fast, ema_slow } => {
+            let ef = perturb_usize(*ema_fast, rng);
+            let es = perturb_usize(*ema_slow, rng);
+            if ef >= es { return None; }
+            DiscoveryStrategyType::AdxEma {
+                adx_period: perturb_usize(*adx_period, rng),
+                adx_threshold: perturb_f64(*adx_threshold, rng).clamp(10.0, 45.0),
+                ema_fast: ef,
+                ema_slow: es,
+            }
+        }
+        DiscoveryStrategyType::WilliamsRStoch { wr_period, wr_overbought, wr_oversold, stoch_period, stoch_overbought, stoch_oversold } => {
+            let wob = perturb_f64(*wr_overbought, rng).clamp(-30.0, -5.0);
+            let wos = perturb_f64(*wr_oversold, rng).clamp(-95.0, -65.0);
+            if wos >= wob { return None; }
+            DiscoveryStrategyType::WilliamsRStoch {
+                wr_period: perturb_usize(*wr_period, rng),
+                wr_overbought: wob,
+                wr_oversold: wos,
+                stoch_period: perturb_usize(*stoch_period, rng),
+                stoch_overbought: perturb_f64(*stoch_overbought, rng).clamp(70.0, 95.0),
+                stoch_oversold: perturb_f64(*stoch_oversold, rng).clamp(5.0, 30.0),
+            }
+        }
+        DiscoveryStrategyType::Gabagool { max_pair_cost, bid_offset, spread_multiplier } => {
+            DiscoveryStrategyType::Gabagool {
+                max_pair_cost: perturb_decimal(*max_pair_cost, rng).max(dec!(0.85)).min(dec!(0.99)),
+                bid_offset: perturb_decimal(*bid_offset, rng).max(dec!(0.001)),
+                spread_multiplier: perturb_decimal(*spread_multiplier, rng).max(dec!(1)),
+            }
+        }
+    })
+}
+
+/// Crossover: if two strategies are the same type, mix their parameters
+fn crossover_strategies(
+    a: &DiscoveryStrategyType,
+    b: &DiscoveryStrategyType,
+    rng: &mut impl rand::Rng,
+) -> Option<DiscoveryStrategyType> {
+    match (a, b) {
+        (
+            DiscoveryStrategyType::Rsi { period: p1, overbought: ob1, oversold: os1 },
+            DiscoveryStrategyType::Rsi { period: p2, overbought: ob2, oversold: os2 },
+        ) => {
+            let ob = if rng.gen_bool(0.5) { *ob1 } else { *ob2 };
+            let os = if rng.gen_bool(0.5) { *os1 } else { *os2 };
+            if os >= ob { return None; }
+            Some(DiscoveryStrategyType::Rsi {
+                period: if rng.gen_bool(0.5) { *p1 } else { *p2 },
+                overbought: ob,
+                oversold: os,
+            })
+        }
+        (
+            DiscoveryStrategyType::BollingerBands { period: p1, multiplier: m1 },
+            DiscoveryStrategyType::BollingerBands { period: p2, multiplier: m2 },
+        ) => {
+            Some(DiscoveryStrategyType::BollingerBands {
+                period: if rng.gen_bool(0.5) { *p1 } else { *p2 },
+                multiplier: if rng.gen_bool(0.5) { *m1 } else { *m2 },
+            })
+        }
+        (
+            DiscoveryStrategyType::Macd { fast: f1, slow: s1, signal: sig1 },
+            DiscoveryStrategyType::Macd { fast: f2, slow: s2, signal: sig2 },
+        ) => {
+            let f = if rng.gen_bool(0.5) { *f1 } else { *f2 };
+            let s = if rng.gen_bool(0.5) { *s1 } else { *s2 };
+            if f >= s { return None; }
+            Some(DiscoveryStrategyType::Macd {
+                fast: f,
+                slow: s,
+                signal: if rng.gen_bool(0.5) { *sig1 } else { *sig2 },
+            })
+        }
+        (
+            DiscoveryStrategyType::EmaCrossover { fast_period: f1, slow_period: s1 },
+            DiscoveryStrategyType::EmaCrossover { fast_period: f2, slow_period: s2 },
+        ) => {
+            let f = if rng.gen_bool(0.5) { *f1 } else { *f2 };
+            let s = if rng.gen_bool(0.5) { *s1 } else { *s2 };
+            if f >= s { return None; }
+            Some(DiscoveryStrategyType::EmaCrossover {
+                fast_period: f,
+                slow_period: s,
+            })
+        }
+        // For different strategy types or complex combos, fall back to mutation of the better one
+        _ => mutate_strategy(a, rng),
+    }
+}
+
+/// Generate pure random strategy combinations
+fn generate_random_strategies(count: usize, rng: &mut impl rand::Rng) -> Vec<DiscoveryStrategyType> {
+    let mut grid = Vec::with_capacity(count);
+
+    for _ in 0..count {
+        let strategy_idx = rng.gen_range(0..22);
+        match strategy_idx {
+            0 => grid.push(DiscoveryStrategyType::Rsi {
+                period: rng.gen_range(3..=50),
+                overbought: rng.gen_range(55.0..=90.0),
+                oversold: rng.gen_range(10.0..=45.0),
+            }),
+            1 => grid.push(DiscoveryStrategyType::BollingerBands {
+                period: rng.gen_range(5..=50),
+                multiplier: rng.gen_range(0.5..=4.0),
+            }),
+            2 => {
+                let fast = rng.gen_range(3..=15);
+                let slow = rng.gen_range((fast + 2)..=40);
+                grid.push(DiscoveryStrategyType::Macd {
+                    fast,
+                    slow,
+                    signal: rng.gen_range(2..=15),
+                });
+            }
+            3 => {
+                let fast = rng.gen_range(3..=20);
+                let slow = rng.gen_range((fast + 2)..=100);
+                grid.push(DiscoveryStrategyType::EmaCrossover {
+                    fast_period: fast,
+                    slow_period: slow,
+                });
+            }
+            4 => grid.push(DiscoveryStrategyType::Stochastic {
+                period: rng.gen_range(3..=30),
+                overbought: rng.gen_range(65.0..=95.0),
+                oversold: rng.gen_range(5.0..=35.0),
+            }),
+            5 => grid.push(DiscoveryStrategyType::AtrMeanReversion {
+                atr_period: rng.gen_range(3..=35),
+                sma_period: rng.gen_range(5..=80),
+                multiplier: rng.gen_range(0.5..=3.5),
+            }),
+            6 => grid.push(DiscoveryStrategyType::Vwap {
+                period: rng.gen_range(5..=100),
+            }),
+            7 => grid.push(DiscoveryStrategyType::Obv {
+                sma_period: rng.gen_range(5..=50),
+            }),
+            8 => grid.push(DiscoveryStrategyType::WilliamsR {
+                period: rng.gen_range(3..=35),
+                overbought: rng.gen_range(-30.0..=-5.0),
+                oversold: rng.gen_range(-95.0..=-65.0),
+            }),
+            9 => grid.push(DiscoveryStrategyType::Adx {
+                period: rng.gen_range(5..=35),
+                adx_threshold: rng.gen_range(10.0..=45.0),
+            }),
+            10 => grid.push(DiscoveryStrategyType::RsiBollinger {
+                rsi_period: rng.gen_range(5..=30),
+                rsi_ob: rng.gen_range(60.0..=85.0),
+                rsi_os: rng.gen_range(15.0..=40.0),
+                bb_period: rng.gen_range(10..=35),
+                bb_mult: rng.gen_range(1.0..=3.5),
+            }),
+            11 => {
+                let mf = rng.gen_range(3..=15);
+                let ms = rng.gen_range((mf + 2)..=35);
+                grid.push(DiscoveryStrategyType::MacdRsi {
+                    macd_fast: mf,
+                    macd_slow: ms,
+                    macd_signal: rng.gen_range(2..=12),
+                    rsi_period: rng.gen_range(5..=25),
+                    rsi_ob: rng.gen_range(60.0..=85.0),
+                    rsi_os: rng.gen_range(15.0..=40.0),
+                });
+            }
+            12 => {
+                let ef = rng.gen_range(3..=18);
+                let es = rng.gen_range((ef + 2)..=60);
+                grid.push(DiscoveryStrategyType::EmaRsi {
+                    ema_fast: ef,
+                    ema_slow: es,
+                    rsi_period: rng.gen_range(5..=25),
+                    rsi_ob: rng.gen_range(60.0..=85.0),
+                    rsi_os: rng.gen_range(15.0..=40.0),
+                });
+            }
+            13 => grid.push(DiscoveryStrategyType::StochRsi {
+                stoch_period: rng.gen_range(5..=25),
+                stoch_ob: rng.gen_range(70.0..=90.0),
+                stoch_os: rng.gen_range(10.0..=30.0),
+                rsi_period: rng.gen_range(5..=25),
+                rsi_ob: rng.gen_range(60.0..=85.0),
+                rsi_os: rng.gen_range(15.0..=40.0),
+            }),
+            14 => {
+                let mf = rng.gen_range(3..=15);
+                let ms = rng.gen_range((mf + 2)..=35);
+                grid.push(DiscoveryStrategyType::MacdBollinger {
+                    macd_fast: mf,
+                    macd_slow: ms,
+                    macd_signal: rng.gen_range(2..=12),
+                    bb_period: rng.gen_range(10..=35),
+                    bb_mult: rng.gen_range(1.0..=3.5),
+                });
+            }
+            15 => {
+                let mf = rng.gen_range(3..=15);
+                let ms = rng.gen_range((mf + 2)..=35);
+                grid.push(DiscoveryStrategyType::TripleRsiMacdBb {
+                    rsi_period: rng.gen_range(5..=25),
+                    rsi_ob: rng.gen_range(60.0..=85.0),
+                    rsi_os: rng.gen_range(15.0..=40.0),
+                    macd_fast: mf,
+                    macd_slow: ms,
+                    macd_signal: rng.gen_range(2..=12),
+                    bb_period: rng.gen_range(10..=35),
+                    bb_mult: rng.gen_range(1.0..=3.5),
+                });
+            }
+            16 => {
+                let ef = rng.gen_range(3..=18);
+                let es = rng.gen_range((ef + 2)..=60);
+                grid.push(DiscoveryStrategyType::TripleEmaRsiStoch {
+                    ema_fast: ef,
+                    ema_slow: es,
+                    rsi_period: rng.gen_range(5..=25),
+                    rsi_ob: rng.gen_range(60.0..=85.0),
+                    rsi_os: rng.gen_range(15.0..=40.0),
+                    stoch_period: rng.gen_range(5..=25),
+                    stoch_ob: rng.gen_range(70.0..=90.0),
+                    stoch_os: rng.gen_range(10.0..=30.0),
+                });
+            }
+            17 => grid.push(DiscoveryStrategyType::VwapRsi {
+                vwap_period: rng.gen_range(5..=80),
+                rsi_period: rng.gen_range(5..=25),
+                rsi_overbought: rng.gen_range(60.0..=85.0),
+                rsi_oversold: rng.gen_range(15.0..=40.0),
+            }),
+            18 => {
+                let mf = rng.gen_range(3..=15);
+                let ms = rng.gen_range((mf + 2)..=35);
+                grid.push(DiscoveryStrategyType::ObvMacd {
+                    obv_sma_period: rng.gen_range(5..=40),
+                    macd_fast: mf,
+                    macd_slow: ms,
+                    macd_signal: rng.gen_range(2..=12),
+                });
+            }
+            19 => {
+                let ef = rng.gen_range(3..=20);
+                let es = rng.gen_range((ef + 2)..=60);
+                grid.push(DiscoveryStrategyType::AdxEma {
+                    adx_period: rng.gen_range(5..=35),
+                    adx_threshold: rng.gen_range(10.0..=45.0),
+                    ema_fast: ef,
+                    ema_slow: es,
+                });
+            }
+            20 => grid.push(DiscoveryStrategyType::WilliamsRStoch {
+                wr_period: rng.gen_range(3..=30),
+                wr_overbought: rng.gen_range(-30.0..=-5.0),
+                wr_oversold: rng.gen_range(-95.0..=-65.0),
+                stoch_period: rng.gen_range(3..=25),
+                stoch_overbought: rng.gen_range(70.0..=95.0),
+                stoch_oversold: rng.gen_range(5.0..=30.0),
+            }),
+            _ => {
+                let mpc_f = rng.gen_range(0.85..=0.99);
+                let bo_f = rng.gen_range(0.001..=0.05);
+                let sm_f = rng.gen_range(1.0..=8.0);
+                grid.push(DiscoveryStrategyType::Gabagool {
+                    max_pair_cost: Decimal::from_str_exact(&format!("{:.3}", mpc_f))
+                        .unwrap_or(dec!(0.95)),
+                    bid_offset: Decimal::from_str_exact(&format!("{:.4}", bo_f))
+                        .unwrap_or(dec!(0.01)),
+                    spread_multiplier: Decimal::from_str_exact(&format!("{:.1}", sm_f))
+                        .unwrap_or(dec!(3)),
+                });
+            }
+        }
+    }
+
+    grid
+}
+
+// ============================================================================
+// Continuous Discovery Runner
+// ============================================================================
+
+/// Run discovery continuously in an infinite loop, expanding the search space
+/// each cycle. Stops only when `progress.cancelled` is set to true.
+pub async fn run_continuous_discovery(
+    request: DiscoveryRequest,
+    binance: Arc<BinanceClient>,
+    progress: Arc<DiscoveryProgress>,
+    db_pool: Option<SqlitePool>,
+) {
+    let top_n = request.top_n.unwrap_or(10);
+    let initial_capital = dec!(10000);
+    let base_position_pct = dec!(10);
+    let fee_config = PolymarketFeeConfig::default();
+    let run_id = Utc::now().timestamp_millis().to_string();
+
+    // Multi-sizing modes to test across cycles
+    let sizing_modes = [SizingMode::Fixed, SizingMode::Kelly, SizingMode::ConfidenceWeighted];
+    // Multi-days periods to test
+    let days_variants: Vec<u32> = vec![30, 60, 90, 120, 180];
+
+    progress.is_continuous.store(true, Ordering::Relaxed);
+
+    info!(
+        symbols = ?request.symbols,
+        "Starting continuous discovery (non-stop)"
+    );
+
+    // ── Phase 0: Fetch klines for max period ───────────────────────────
+    let max_days = *days_variants.iter().max().unwrap_or(&request.days);
+    let end_time = chrono::Utc::now().timestamp_millis();
+    let start_time = end_time - (max_days as i64 * 24 * 60 * 60 * 1000);
+    let mut last_fetch_time = std::time::Instant::now();
+
+    let mut symbol_klines: Vec<(String, Vec<Kline>)> = Vec::new();
+
+    for symbol in &request.symbols {
+        if progress.cancelled.load(Ordering::Relaxed) {
+            return;
+        }
+        *progress.current_symbol.write().unwrap() = symbol.clone();
+
+        match binance
+            .get_klines_paginated(symbol, "15m", start_time, end_time)
+            .await
+        {
+            Ok(klines) => {
+                info!(symbol = %symbol, bars = klines.len(), "Fetched klines");
+                symbol_klines.push((symbol.clone(), klines));
+            }
+            Err(e) => {
+                warn!(symbol = %symbol, error = %e, "Failed to fetch klines, skipping");
+            }
+        }
+    }
+
+    if symbol_klines.is_empty() {
+        *progress.error_message.write().unwrap() =
+            Some("Failed to fetch klines for any symbol".to_string());
+        *progress.status.write().unwrap() = DiscoveryStatus::Error;
+        return;
+    }
+
+    // ── Main loop ──────────────────────────────────────────────────────
+    let mut all_results: Vec<DiscoveryResult> = Vec::new();
+    let mut cycle = 0u32;
+
+    loop {
+        if progress.cancelled.load(Ordering::Relaxed) {
+            info!("Continuous discovery cancelled by user");
+            break;
+        }
+
+        // Re-fetch klines every 6 hours
+        if last_fetch_time.elapsed() > std::time::Duration::from_secs(6 * 3600) {
+            info!("Re-fetching klines (6h refresh)");
+            *progress.status.write().unwrap() = DiscoveryStatus::FetchingData;
+            *progress.phase.write().unwrap() = "Refreshing market data...".to_string();
+
+            let new_end = chrono::Utc::now().timestamp_millis();
+            let new_start = new_end - (max_days as i64 * 24 * 60 * 60 * 1000);
+            let mut new_klines = Vec::new();
+
+            for symbol in &request.symbols {
+                if progress.cancelled.load(Ordering::Relaxed) {
+                    break;
+                }
+                match binance
+                    .get_klines_paginated(symbol, "15m", new_start, new_end)
+                    .await
+                {
+                    Ok(klines) => {
+                        info!(symbol = %symbol, bars = klines.len(), "Refreshed klines");
+                        new_klines.push((symbol.clone(), klines));
+                    }
+                    Err(e) => {
+                        warn!(symbol = %symbol, error = %e, "Failed to refresh klines");
+                    }
+                }
+            }
+
+            if !new_klines.is_empty() {
+                symbol_klines = new_klines;
+            }
+            last_fetch_time = std::time::Instant::now();
+        }
+
+        // Set cycle info
+        progress.current_cycle.store(cycle, Ordering::Relaxed);
+        progress.total_new_this_cycle.store(0, Ordering::Relaxed);
+
+        let phase_name = if cycle == 0 {
+            "Phase 1: Broad Scan"
+        } else if cycle == 1 {
+            "Phase 2: Fine Interpolation"
+        } else if cycle == 2 {
+            "Phase 3: Extended Ranges"
+        } else {
+            "ML-Guided Exploration"
+        };
+
+        let status = if cycle < 2 {
+            if cycle == 0 {
+                DiscoveryStatus::Phase1BroadScan
+            } else {
+                DiscoveryStatus::Phase2Refinement
+            }
+        } else {
+            DiscoveryStatus::Phase3Exploration
+        };
+
+        *progress.status.write().unwrap() = status;
+        *progress.phase.write().unwrap() = format!("Cycle {} — {}", cycle, phase_name);
+
+        let grid = if cycle >= 3 {
+            generate_ml_guided_grid(&all_results, cycle)
+        } else {
+            generate_exploratory_grid(cycle)
+        };
+
+        // For cycle 0, also do Phase 2 refinement after the grid
+        let do_refinement = cycle == 0;
+
+        // Build the full work list: grid × symbols × days × sizing
+        let sizing_list = if cycle == 0 {
+            // First cycle: use request sizing only
+            vec![request.sizing_mode.unwrap_or_default()]
+        } else {
+            // Later cycles: test all sizing modes
+            sizing_modes.to_vec()
+        };
+
+        let days_list = if cycle == 0 {
+            vec![request.days]
+        } else {
+            days_variants.clone()
+        };
+
+        let total_combos = grid.len() as u32
+            * symbol_klines.len() as u32
+            * days_list.len() as u32
+            * sizing_list.len() as u32;
+
+        progress
+            .total_combinations
+            .store(total_combos, Ordering::Relaxed);
+        progress.completed.store(0, Ordering::Relaxed);
+        progress.skipped.store(0, Ordering::Relaxed);
+
+        info!(
+            cycle = cycle,
+            grid_size = grid.len(),
+            total_combos = total_combos,
+            "Cycle starting"
+        );
+
+        let mut cycle_idx = 0u32;
+
+        for (symbol, full_klines) in &symbol_klines {
+            for &days in &days_list {
+                // Slice klines to the requested days period
+                let klines = slice_klines_to_days(full_klines, days);
+
+                for sizing_mode in &sizing_list {
+                    for strategy_type in &grid {
+                        if progress.cancelled.load(Ordering::Relaxed) {
+                            info!("Continuous discovery cancelled by user");
+                            *progress.status.write().unwrap() = DiscoveryStatus::Complete;
+                            update_best_so_far(&all_results, initial_capital, top_n, &progress);
+                            *progress.final_results.write().unwrap() =
+                                progress.best_so_far.read().unwrap().clone();
+                            return;
+                        }
+
+                        if cycle_idx % 50 == 0 {
+                            *progress.current_strategy.write().unwrap() =
+                                strategy_type.name().to_string();
+                            *progress.current_symbol.write().unwrap() = symbol.clone();
+                        }
+
+                        // Check DB cache
+                        let hash =
+                            compute_params_hash(strategy_type, symbol, days, *sizing_mode);
+                        if let Some(pool) = &db_pool {
+                            let repo = DiscoveryRepository::new(pool);
+                            if let Ok(Some(existing)) = repo.get_by_hash(&hash).await {
+                                all_results.push(record_to_result(existing));
+                                cycle_idx += 1;
+                                progress.completed.store(cycle_idx, Ordering::Relaxed);
+                                progress.skipped.fetch_add(1, Ordering::Relaxed);
+                                progress
+                                    .total_tested_all_cycles
+                                    .fetch_add(1, Ordering::Relaxed);
+                                if cycle_idx % 50 == 0 {
+                                    update_best_so_far(
+                                        &all_results,
+                                        initial_capital,
+                                        top_n,
+                                        &progress,
+                                    );
+                                    tokio::time::sleep(std::time::Duration::from_millis(1)).await;
+                                }
+                                continue;
+                            }
+                        }
+
+                        let result = run_single_backtest(
+                            strategy_type,
+                            &klines,
+                            symbol,
+                            initial_capital,
+                            base_position_pct,
+                            *sizing_mode,
+                            &fee_config,
+                        );
+
+                        // Save to DB
+                        if let Some(pool) = &db_pool {
+                            let phase_label = format!("cycle{}", cycle);
+                            let record =
+                                result_to_record(&result, &hash, &run_id, &phase_label, days);
+                            let repo = DiscoveryRepository::new(pool);
+                            let _ = repo.save(&record).await;
+                        }
+
+                        all_results.push(result);
+
+                        cycle_idx += 1;
+                        progress.completed.store(cycle_idx, Ordering::Relaxed);
+                        progress.total_new_this_cycle.fetch_add(1, Ordering::Relaxed);
+                        progress
+                            .total_tested_all_cycles
+                            .fetch_add(1, Ordering::Relaxed);
+
+                        if cycle_idx % 50 == 0 {
+                            update_best_so_far(&all_results, initial_capital, top_n, &progress);
+                            tokio::time::sleep(std::time::Duration::from_millis(1)).await;
+                        }
+                    }
+                }
+            }
+        }
+
+        // Phase 2 refinement for cycle 0
+        if do_refinement {
+            *progress.status.write().unwrap() = DiscoveryStatus::Phase2Refinement;
+            *progress.phase.write().unwrap() = "Cycle 0 — Phase 2: Refinement".to_string();
+
+            let mut scored = all_results.clone();
+            scored.sort_by(|a, b| {
+                let sa = score_result(a, initial_capital);
+                let sb = score_result(b, initial_capital);
+                sb.cmp(&sa)
+            });
+            let top_for_refinement: Vec<DiscoveryResult> = scored.into_iter().take(20).collect();
+
+            for top_result in &top_for_refinement {
+                if progress.cancelled.load(Ordering::Relaxed) {
+                    break;
+                }
+                let refinement_grid = generate_refinement_grid(&top_result.strategy_type);
+                let klines_opt = symbol_klines
+                    .iter()
+                    .find(|(s, _)| *s == top_result.symbol)
+                    .map(|(_, k)| k);
+                let full_kl = match klines_opt {
+                    Some(k) => k,
+                    None => continue,
+                };
+                let klines = slice_klines_to_days(full_kl, request.days);
+                let sizing_mode = request.sizing_mode.unwrap_or_default();
+
+                *progress.current_strategy.write().unwrap() =
+                    format!("{} (refine)", top_result.strategy_name);
+
+                for variant in &refinement_grid {
+                    let hash = compute_params_hash(
+                        variant,
+                        &top_result.symbol,
+                        request.days,
+                        sizing_mode,
+                    );
+                    if let Some(pool) = &db_pool {
+                        let repo = DiscoveryRepository::new(pool);
+                        if let Ok(Some(existing)) = repo.get_by_hash(&hash).await {
+                            all_results.push(record_to_result(existing));
+                            progress.skipped.fetch_add(1, Ordering::Relaxed);
+                            progress
+                                .total_tested_all_cycles
+                                .fetch_add(1, Ordering::Relaxed);
+                            continue;
+                        }
+                    }
+
+                    let result = run_single_backtest(
+                        variant,
+                        &klines,
+                        &top_result.symbol,
+                        initial_capital,
+                        base_position_pct,
+                        sizing_mode,
+                        &fee_config,
+                    );
+
+                    if let Some(pool) = &db_pool {
+                        let record = result_to_record(
+                            &result,
+                            &hash,
+                            &run_id,
+                            "phase2",
+                            request.days,
+                        );
+                        let repo = DiscoveryRepository::new(pool);
+                        let _ = repo.save(&record).await;
+                    }
+
+                    all_results.push(result);
+                    progress.total_new_this_cycle.fetch_add(1, Ordering::Relaxed);
+                    progress
+                        .total_tested_all_cycles
+                        .fetch_add(1, Ordering::Relaxed);
+                }
+            }
+        }
+
+        // Update best at end of cycle
+        update_best_so_far(&all_results, initial_capital, top_n, &progress);
+
+        let new_count = progress.total_new_this_cycle.load(Ordering::Relaxed);
+        let total_all = progress.total_tested_all_cycles.load(Ordering::Relaxed);
+        info!(
+            cycle = cycle,
+            new_this_cycle = new_count,
+            total_all_cycles = total_all,
+            best_score = %progress
+                .best_so_far
+                .read()
+                .unwrap()
+                .first()
+                .map(|r| r.composite_score)
+                .unwrap_or_default(),
+            "Cycle complete"
+        );
+
+        cycle += 1;
+
+        // Brief pause between cycles
+        tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+    }
+
+    // Final state
+    update_best_so_far(&all_results, initial_capital, top_n, &progress);
+    *progress.final_results.write().unwrap() = progress.best_so_far.read().unwrap().clone();
+    *progress.status.write().unwrap() = DiscoveryStatus::Complete;
+
+    info!(
+        total_cycles = cycle,
+        total_tested = progress.total_tested_all_cycles.load(Ordering::Relaxed),
+        "Continuous discovery finished"
+    );
+}
+
+/// Slice klines to only include the last N days of data
+fn slice_klines_to_days(klines: &[Kline], days: u32) -> Vec<Kline> {
+    if klines.is_empty() {
+        return Vec::new();
+    }
+    let last_time = klines.last().unwrap().close_time;
+    let cutoff = last_time - (days as i64 * 24 * 60 * 60 * 1000);
+    klines
+        .iter()
+        .filter(|k| k.open_time >= cutoff)
+        .cloned()
+        .collect()
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1518,9 +3345,9 @@ mod tests {
     #[test]
     fn test_phase1_grid_size() {
         let grid = generate_phase1_grid();
-        // Should be roughly 400-500 per symbol
-        assert!(grid.len() > 350, "Grid too small: {}", grid.len());
-        assert!(grid.len() < 600, "Grid too large: {}", grid.len());
+        // Should be roughly 750-950 per symbol (original ~450 + ~374 new)
+        assert!(grid.len() > 700, "Grid too small: {}", grid.len());
+        assert!(grid.len() < 1000, "Grid too large: {}", grid.len());
     }
 
     #[test]
@@ -1550,6 +3377,30 @@ mod tests {
         let has_combo = grid
             .iter()
             .any(|s| matches!(s, DiscoveryStrategyType::RsiBollinger { .. }));
+        let has_vwap = grid
+            .iter()
+            .any(|s| matches!(s, DiscoveryStrategyType::Vwap { .. }));
+        let has_obv = grid
+            .iter()
+            .any(|s| matches!(s, DiscoveryStrategyType::Obv { .. }));
+        let has_wr = grid
+            .iter()
+            .any(|s| matches!(s, DiscoveryStrategyType::WilliamsR { .. }));
+        let has_adx = grid
+            .iter()
+            .any(|s| matches!(s, DiscoveryStrategyType::Adx { .. }));
+        let has_vwap_rsi = grid
+            .iter()
+            .any(|s| matches!(s, DiscoveryStrategyType::VwapRsi { .. }));
+        let has_obv_macd = grid
+            .iter()
+            .any(|s| matches!(s, DiscoveryStrategyType::ObvMacd { .. }));
+        let has_adx_ema = grid
+            .iter()
+            .any(|s| matches!(s, DiscoveryStrategyType::AdxEma { .. }));
+        let has_wr_stoch = grid
+            .iter()
+            .any(|s| matches!(s, DiscoveryStrategyType::WilliamsRStoch { .. }));
 
         assert!(has_rsi, "Missing RSI strategies");
         assert!(has_bb, "Missing Bollinger strategies");
@@ -1559,6 +3410,14 @@ mod tests {
         assert!(has_atr, "Missing ATR strategies");
         assert!(has_gabagool, "Missing Gabagool strategies");
         assert!(has_combo, "Missing combo strategies");
+        assert!(has_vwap, "Missing VWAP strategies");
+        assert!(has_obv, "Missing OBV strategies");
+        assert!(has_wr, "Missing Williams %R strategies");
+        assert!(has_adx, "Missing ADX strategies");
+        assert!(has_vwap_rsi, "Missing VWAP+RSI strategies");
+        assert!(has_obv_macd, "Missing OBV+MACD strategies");
+        assert!(has_adx_ema, "Missing ADX+EMA strategies");
+        assert!(has_wr_stoch, "Missing WilliamsR+Stoch strategies");
     }
 
     #[test]
@@ -1718,5 +3577,165 @@ mod tests {
         assert_eq!(result.symbol, "BTCUSDT");
         assert!(result.hit_rate.is_some());
         assert!(result.avg_locked_profit.is_some());
+    }
+
+    #[test]
+    fn test_exploratory_grid_cycle0_matches_phase1() {
+        let grid_cycle0 = generate_exploratory_grid(0);
+        let grid_phase1 = generate_phase1_grid();
+        assert_eq!(grid_cycle0.len(), grid_phase1.len());
+    }
+
+    #[test]
+    fn test_exploratory_grid_cycle1_produces_combos() {
+        let grid = generate_exploratory_grid(1);
+        assert!(grid.len() > 50, "Cycle 1 grid too small: {}", grid.len());
+        assert!(grid.len() < 500, "Cycle 1 grid too large: {}", grid.len());
+    }
+
+    #[test]
+    fn test_exploratory_grid_cycle2_produces_combos() {
+        let grid = generate_exploratory_grid(2);
+        assert!(grid.len() > 50, "Cycle 2 grid too small: {}", grid.len());
+    }
+
+    #[test]
+    fn test_exploratory_grid_cycle3_random() {
+        let grid = generate_exploratory_grid(3);
+        assert_eq!(grid.len(), 500, "Cycle 3 should produce 500 combos");
+    }
+
+    #[test]
+    fn test_exploratory_grid_cycle5_grows() {
+        let grid3 = generate_exploratory_grid(3);
+        let grid5 = generate_exploratory_grid(5);
+        assert!(
+            grid5.len() > grid3.len(),
+            "Later cycles should produce more combos"
+        );
+    }
+
+    #[test]
+    fn test_ml_guided_grid_with_no_results() {
+        // With no top results, should still generate exploration-only grid
+        let grid = generate_ml_guided_grid(&[], 3);
+        assert!(grid.len() > 50, "Should produce exploration combos even with no results: {}", grid.len());
+    }
+
+    #[test]
+    fn test_ml_guided_grid_with_results() {
+        let results = vec![
+            DiscoveryResult {
+                rank: 1,
+                strategy_type: DiscoveryStrategyType::Rsi {
+                    period: 14,
+                    overbought: 70.0,
+                    oversold: 30.0,
+                },
+                strategy_name: "RSI".to_string(),
+                symbol: "BTCUSDT".to_string(),
+                sizing_mode: SizingMode::Fixed,
+                composite_score: dec!(500),
+                net_pnl: dec!(100),
+                gross_pnl: dec!(120),
+                total_fees: dec!(20),
+                win_rate: dec!(65),
+                total_trades: 20,
+                sharpe_ratio: dec!(1.5),
+                max_drawdown_pct: dec!(5),
+                profit_factor: dec!(2),
+                avg_trade_pnl: dec!(5),
+                hit_rate: None,
+                avg_locked_profit: None,
+            },
+            DiscoveryResult {
+                rank: 2,
+                strategy_type: DiscoveryStrategyType::BollingerBands {
+                    period: 20,
+                    multiplier: 2.0,
+                },
+                strategy_name: "Bollinger Bands".to_string(),
+                symbol: "ETHUSDT".to_string(),
+                sizing_mode: SizingMode::Fixed,
+                composite_score: dec!(400),
+                net_pnl: dec!(80),
+                gross_pnl: dec!(100),
+                total_fees: dec!(20),
+                win_rate: dec!(60),
+                total_trades: 15,
+                sharpe_ratio: dec!(1.2),
+                max_drawdown_pct: dec!(8),
+                profit_factor: dec!(1.8),
+                avg_trade_pnl: dec!(5.3),
+                hit_rate: None,
+                avg_locked_profit: None,
+            },
+        ];
+
+        let grid = generate_ml_guided_grid(&results, 3);
+        // Budget = 300 + 3*50 = 450
+        assert!(grid.len() > 100, "Should produce a substantial grid: {}", grid.len());
+        assert!(grid.len() <= 1000, "Grid too large: {}", grid.len());
+    }
+
+    #[test]
+    fn test_ml_guided_grid_grows_with_cycle() {
+        let results = vec![DiscoveryResult {
+            rank: 1,
+            strategy_type: DiscoveryStrategyType::Rsi {
+                period: 14,
+                overbought: 70.0,
+                oversold: 30.0,
+            },
+            strategy_name: "RSI".to_string(),
+            symbol: "BTCUSDT".to_string(),
+            sizing_mode: SizingMode::Fixed,
+            composite_score: dec!(500),
+            net_pnl: dec!(100),
+            gross_pnl: dec!(120),
+            total_fees: dec!(20),
+            win_rate: dec!(65),
+            total_trades: 20,
+            sharpe_ratio: dec!(1.5),
+            max_drawdown_pct: dec!(5),
+            profit_factor: dec!(2),
+            avg_trade_pnl: dec!(5),
+            hit_rate: None,
+            avg_locked_profit: None,
+        }];
+
+        let grid3 = generate_ml_guided_grid(&results, 3);
+        let grid6 = generate_ml_guided_grid(&results, 6);
+        assert!(
+            grid6.len() > grid3.len(),
+            "Later cycles should produce more combos ({} vs {})",
+            grid6.len(),
+            grid3.len()
+        );
+    }
+
+    #[test]
+    fn test_slice_klines_to_days() {
+        // 100 bars, 15 min each = 25 hours = ~1 day
+        let klines = make_klines(&vec![100.0; 200]);
+        // With our make_klines, each bar is 900_000ms apart
+        // 200 bars × 900s = 180_000s = 50 hours ≈ 2 days
+        // Asking for 1 day = last 96 bars (96 × 15min = 24h)
+        let sliced = slice_klines_to_days(&klines, 1);
+        // The klines span about 2 days, so 1 day should give roughly half
+        assert!(sliced.len() > 80 && sliced.len() < 120, "Got {} bars for 1 day", sliced.len());
+    }
+
+    #[test]
+    fn test_continuous_progress_fields() {
+        let progress = DiscoveryProgress::new();
+        assert_eq!(progress.current_cycle.load(Ordering::Relaxed), 0);
+        assert_eq!(progress.total_tested_all_cycles.load(Ordering::Relaxed), 0);
+        assert_eq!(progress.total_new_this_cycle.load(Ordering::Relaxed), 0);
+        assert!(!progress.is_continuous.load(Ordering::Relaxed));
+
+        progress.reset();
+        assert_eq!(progress.current_cycle.load(Ordering::Relaxed), 0);
+        assert!(!progress.is_continuous.load(Ordering::Relaxed));
     }
 }
