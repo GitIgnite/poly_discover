@@ -1,0 +1,176 @@
+name: Build and Deploy
+
+on:
+  push:
+    branches: [master, main]
+  workflow_dispatch:  # Permet de lancer manuellement
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Setup Rust
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: x86_64-unknown-linux-gnu
+
+      - name: Cache Cargo
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/bin/
+            ~/.cargo/registry/index/
+            ~/.cargo/registry/cache/
+            ~/.cargo/git/db/
+            target/
+          key: ${{ runner.os }}-cargo-${{ hashFiles('**/Cargo.lock') }}
+          restore-keys: |
+            ${{ runner.os }}-cargo-
+
+      - name: Build Rust backend
+        run: cargo build --release --package poly-discover
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+          cache: 'npm'
+
+      - name: Install npm dependencies
+        run: npm ci
+
+      - name: Build frontend
+        run: npm run build
+
+      - name: Prepare deployment package
+        run: |
+          mkdir -p deploy
+          cp target/release/poly-discover deploy/
+          cp -r dist deploy/
+          cp .env.example deploy/.env.example
+          chmod +x deploy/poly-discover
+          tar -czvf poly-discover-linux.tar.gz -C deploy .
+
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: poly-discover-linux
+          path: poly-discover-linux.tar.gz
+          retention-days: 30
+
+  deploy:
+    needs: build
+    runs-on: ubuntu-latest
+    if: github.ref == 'refs/heads/master' || github.ref == 'refs/heads/main'
+
+    steps:
+      - name: Download artifact
+        uses: actions/download-artifact@v4
+        with:
+          name: poly-discover-linux
+
+      - name: Check secrets
+        run: |
+          if [ -z "${{ secrets.AWS_SSH_PRIVATE_KEY }}" ]; then
+            echo "::error::AWS_SSH_PRIVATE_KEY secret is not set"
+            exit 1
+          fi
+          if [ -z "${{ secrets.AWS_HOST }}" ]; then
+            echo "::error::AWS_HOST secret is not set"
+            exit 1
+          fi
+          echo "✓ All secrets are configured"
+
+      - name: Setup SSH
+        env:
+          SSH_PRIVATE_KEY: ${{ secrets.AWS_SSH_PRIVATE_KEY }}
+          AWS_HOST: ${{ secrets.AWS_HOST }}
+        run: |
+          mkdir -p ~/.ssh
+          echo "$SSH_PRIVATE_KEY" > ~/.ssh/id_rsa
+          chmod 600 ~/.ssh/id_rsa
+          echo "✓ SSH key written"
+
+          echo "Scanning host $AWS_HOST..."
+          ssh-keyscan -H $AWS_HOST >> ~/.ssh/known_hosts 2>&1 || echo "Warning: ssh-keyscan failed"
+          echo "✓ SSH setup complete"
+
+      - name: Test SSH connection
+        env:
+          AWS_HOST: ${{ secrets.AWS_HOST }}
+        run: |
+          echo "Testing SSH connection to $AWS_HOST..."
+          ssh -o ConnectTimeout=10 -o StrictHostKeyChecking=no ubuntu@$AWS_HOST "echo '✓ SSH connection successful'" || {
+            echo "::error::SSH connection failed. Check your SSH key and Security Group."
+            exit 1
+          }
+
+      - name: Copy files to server
+        env:
+          AWS_HOST: ${{ secrets.AWS_HOST }}
+        run: |
+          echo "Copying poly-discover-linux.tar.gz to server..."
+          scp -o ConnectTimeout=30 poly-discover-linux.tar.gz ubuntu@$AWS_HOST:~/
+          echo "✓ Files copied"
+
+      - name: Deploy on server
+        env:
+          AWS_HOST: ${{ secrets.AWS_HOST }}
+        run: |
+          ssh ubuntu@$AWS_HOST << 'EOF'
+            set -e
+            echo "=== Starting deployment ==="
+            cd ~
+
+            echo "Extracting archive..."
+            mkdir -p poly_discover_new
+            tar -xzvf poly-discover-linux.tar.gz -C poly_discover_new
+
+            echo "Backing up current version..."
+            if [ -d "poly_discover" ]; then
+              mv poly_discover poly_discover_backup_$(date +%Y%m%d_%H%M%S)
+              echo "✓ Backup created"
+            fi
+
+            echo "Deploying new version..."
+            mv poly_discover_new poly_discover
+
+            echo "Preserving .env if exists..."
+            for backup in poly_discover_backup_*/; do
+              if [ -f "${backup}.env" ]; then
+                cp "${backup}.env" poly_discover/.env
+                echo "✓ .env restored from backup"
+                break
+              fi
+            done
+
+            echo "Preserving database if exists..."
+            for backup in poly_discover_backup_*/; do
+              if [ -d "${backup}data" ]; then
+                mkdir -p poly_discover/data
+                cp "${backup}data/"*.db* poly_discover/data/ 2>/dev/null || true
+                echo "✓ Database restored from backup"
+                break
+              fi
+            done
+
+            echo "Restarting service on port 4000..."
+            if command -v pm2 &> /dev/null; then
+              pm2 restart poly-discover 2>/dev/null || pm2 start ~/poly_discover/poly-discover --name poly-discover -- serve --port 4000 --host 0.0.0.0
+              echo "✓ Service restarted with pm2 on port 4000"
+            else
+              echo "Warning: pm2 not found, skipping service restart"
+            fi
+
+            echo "Cleaning up..."
+            rm -f poly-discover-linux.tar.gz
+
+            echo "=== Deployment complete! ==="
+          EOF
