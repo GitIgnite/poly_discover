@@ -254,19 +254,19 @@
         <table class="w-full text-sm">
           <thead>
             <tr class="text-gray-400 text-xs uppercase border-b border-gray-700">
-              <th class="px-3 py-2 text-left" title="Row number in the current page">#</th>
-              <th class="px-3 py-2 text-left" title="Strategy name and type (single indicator, combo, or arbitrage)">Strategy</th>
-              <th class="px-3 py-2 text-left" title="Trading pair used for backtest (Binance symbol)">Symbol</th>
-              <th class="px-3 py-2 text-right" title="Strategy confidence (0-100%) — consistency across 4 time quartiles. Green >=70%, Yellow >=40%, Red <40%">Conf.</th>
-              <th class="px-3 py-2 text-right" title="Composite score combining PnL, win rate, Sharpe, drawdown, profit factor, confidence bonus, and Sortino bonus">Score</th>
-              <th class="px-3 py-2 text-right" title="Net profit/loss in USDC after Polymarket taker fees">Net PnL</th>
-              <th class="px-3 py-2 text-right" title="Percentage of trades that were profitable">Win Rate</th>
-              <th class="px-3 py-2 text-right" title="Annualized return: (1 + total_return) ^ (365 / days) - 1">Ann. Ret.</th>
-              <th class="px-3 py-2 text-right" title="Sharpe ratio — risk-adjusted return (excess return / standard deviation). Higher is better, >1 is good, >2 is excellent">Sharpe</th>
-              <th class="px-3 py-2 text-right" title="Sortino ratio — like Sharpe but only penalizes downside volatility. Higher is better">Sortino</th>
-              <th class="px-3 py-2 text-right" title="Maximum drawdown — largest peak-to-trough decline during the backtest period">Drawdown</th>
-              <th class="px-3 py-2 text-right" title="Total number of trades executed during the backtest">Trades</th>
-              <th class="px-3 py-2 text-left" title="Strategy parameters as JSON (indicator settings, thresholds, periods)">Params</th>
+              <th class="px-3 py-2 text-left" title="Numéro de ligne dans la page courante">#</th>
+              <th class="px-3 py-2 text-left" title="Nom et type de stratégie (indicateur seul, combo ou arbitrage)">Strategy</th>
+              <th class="px-3 py-2 text-left" title="Paire de trading utilisée pour le backtest (symbole Binance)">Symbol</th>
+              <th class="px-3 py-2 text-right" title="Confiance de la stratégie (0-100%) — mesure la consistance sur 4 quartiles temporels. Vert >=70%, Jaune >=40%, Rouge <40%">Conf.</th>
+              <th class="px-3 py-2 text-right" title="Score composite combinant PnL net, win rate, Sharpe, drawdown, profit factor, bonus confiance et bonus Sortino">Score</th>
+              <th class="px-3 py-2 text-right" title="Profit/perte net en USDC après frais taker Polymarket">Net PnL</th>
+              <th class="px-3 py-2 text-right" title="Pourcentage de trades gagnants sur le total des trades">Win Rate</th>
+              <th class="px-3 py-2 text-right" title="Rendement annualisé : (1 + rendement_total) ^ (365 / jours) - 1">Ann. Ret.</th>
+              <th class="px-3 py-2 text-right" title="Ratio de Sharpe — rendement ajusté au risque (rendement excédentaire / écart-type). Plus c'est haut mieux c'est, >1 = bon, >2 = excellent">Sharpe</th>
+              <th class="px-3 py-2 text-right" title="Ratio de Sortino — comme le Sharpe mais ne pénalise que la volatilité à la baisse. Plus c'est haut mieux c'est">Sortino</th>
+              <th class="px-3 py-2 text-right" title="Drawdown maximum — plus grande baisse entre un pic et un creux pendant la période de backtest">Drawdown</th>
+              <th class="px-3 py-2 text-right" title="Nombre total de trades exécutés pendant le backtest">Trades</th>
+              <th class="px-3 py-2 text-left" title="Paramètres de la stratégie en JSON (réglages des indicateurs, seuils, périodes)">Params</th>
             </tr>
           </thead>
           <tbody>
