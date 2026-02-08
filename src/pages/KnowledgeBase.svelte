@@ -196,6 +196,7 @@
           <option value="obv_macd">OBV+MACD</option>
           <option value="adx_ema">ADX+EMA</option>
           <option value="williams_r_stoch">Williams%R+Stoch</option>
+          <option value="dynamic_combo">Dynamic Combos</option>
           <option value="gabagool">Gabagool</option>
         </select>
       </div>

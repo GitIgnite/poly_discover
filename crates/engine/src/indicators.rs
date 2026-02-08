@@ -1228,10 +1228,80 @@ pub fn build_signal_generator(strategy_type: &DiscoveryStrategyType) -> Box<dyn 
             CombineMode::Unanimous,
         )),
 
+        // Dynamic combos: build each sub-indicator, wrap in ComboSignalGenerator
+        DiscoveryStrategyType::DynamicCombo { indicators, params, combine_mode } => {
+            use crate::discovery::DynCombineMode;
+
+            let generators: Vec<Box<dyn SignalGenerator>> = indicators.iter()
+                .zip(params.iter())
+                .map(|(ind, p)| build_single_generator(ind, p))
+                .collect();
+
+            let name = format!(
+                "{}({})",
+                indicators.iter().map(|i| i.short_name()).collect::<Vec<_>>().join("+"),
+                combine_mode.short_suffix(),
+            );
+
+            let mode = match combine_mode {
+                DynCombineMode::Unanimous => CombineMode::Unanimous,
+                DynCombineMode::Majority => CombineMode::Majority,
+                DynCombineMode::PrimaryConfirmed => CombineMode::PrimaryConfirmed,
+            };
+
+            Box::new(ComboSignalGenerator::new(name, generators, mode))
+        }
+
         // Gabagool is handled separately in discovery.rs, not via SignalGenerator
         DiscoveryStrategyType::Gabagool { .. } => {
             // Return a dummy RSI that always holds — Gabagool uses its own engine
             Box::new(RsiSignalGenerator::new(14, 99.0, 1.0))
+        }
+    }
+}
+
+/// Build a single indicator signal generator from its type and params
+fn build_single_generator(
+    ind: &crate::discovery::SingleIndicatorType,
+    params: &crate::discovery::IndicatorParams,
+) -> Box<dyn SignalGenerator> {
+    use crate::discovery::{IndicatorParams, SingleIndicatorType};
+
+    match (ind, params) {
+        (SingleIndicatorType::Rsi, IndicatorParams::Rsi { period, overbought, oversold }) => {
+            Box::new(RsiSignalGenerator::new(*period, *overbought, *oversold))
+        }
+        (SingleIndicatorType::BollingerBands, IndicatorParams::BollingerBands { period, multiplier }) => {
+            Box::new(BollingerSignalGenerator::new(*period, *multiplier))
+        }
+        (SingleIndicatorType::Macd, IndicatorParams::Macd { fast, slow, signal }) => {
+            Box::new(MacdSignalGenerator::new(*fast, *slow, *signal))
+        }
+        (SingleIndicatorType::EmaCrossover, IndicatorParams::EmaCrossover { fast_period, slow_period }) => {
+            Box::new(EmaCrossoverSignalGenerator::new(*fast_period, *slow_period))
+        }
+        (SingleIndicatorType::Stochastic, IndicatorParams::Stochastic { period, overbought, oversold }) => {
+            Box::new(StochasticSignalGenerator::new(*period, *overbought, *oversold))
+        }
+        (SingleIndicatorType::AtrMeanReversion, IndicatorParams::AtrMeanReversion { atr_period, sma_period, multiplier }) => {
+            Box::new(AtrMeanReversionSignalGenerator::new(*atr_period, *sma_period, *multiplier))
+        }
+        (SingleIndicatorType::Vwap, IndicatorParams::Vwap { period }) => {
+            Box::new(VwapSignalGenerator::new(*period))
+        }
+        (SingleIndicatorType::Obv, IndicatorParams::Obv { sma_period }) => {
+            Box::new(ObvSignalGenerator::new(*sma_period))
+        }
+        (SingleIndicatorType::WilliamsR, IndicatorParams::WilliamsR { period, overbought, oversold }) => {
+            Box::new(WilliamsRSignalGenerator::new(*period, *overbought, *oversold))
+        }
+        (SingleIndicatorType::Adx, IndicatorParams::Adx { period, adx_threshold }) => {
+            Box::new(AdxSignalGenerator::new(*period, *adx_threshold))
+        }
+        // Fallback: if indicator/params mismatch, use default params
+        _ => {
+            let default_params = ind.default_params();
+            build_single_generator(ind, &default_params)
         }
     }
 }
