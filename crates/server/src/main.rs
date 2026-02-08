@@ -27,7 +27,7 @@ use tower_http::cors::{Any, CorsLayer};
 use tower_http::services::ServeDir;
 use tracing::{error, info};
 
-const APP_VERSION: &str = "1.0.0-20260206";
+const APP_VERSION: &str = concat!(env!("CARGO_PKG_VERSION"), "-", env!("GIT_HASH"));
 
 #[derive(Parser)]
 #[command(name = "poly-discover")]
