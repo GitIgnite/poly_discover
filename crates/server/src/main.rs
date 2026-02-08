@@ -647,8 +647,10 @@ async fn api_top_strategies(
         .and_then(|s| s.parse().ok())
         .unwrap_or(20);
 
+    let sort_by = params.get("sort_by").map(|s| s.as_str());
+
     let repo = DiscoveryRepository::new(state.db.pool());
-    match repo.get_top_unique_strategies(limit).await {
+    match repo.get_top_unique_strategies(limit, sort_by).await {
         Ok(records) => Json(serde_json::json!({
             "success": true,
             "data": records,

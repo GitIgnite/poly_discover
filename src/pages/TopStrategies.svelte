@@ -28,7 +28,7 @@
   // ============================================================================
   const unsubscribe = discoveryStatus.subscribe(status => {
     if (status.running && !autoRefreshInterval) {
-      autoRefreshInterval = setInterval(loadTopStrategies, 5000);
+      autoRefreshInterval = setInterval(loadTopStrategies, 60000);
     } else if (!status.running && autoRefreshInterval) {
       clearInterval(autoRefreshInterval);
       autoRefreshInterval = null;

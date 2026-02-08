@@ -1,10 +1,11 @@
 <script>
-  import { Search, Database, Sparkles, Trophy } from 'lucide-svelte';
+  import { Search, Database, Sparkles, Trophy, BookOpen } from 'lucide-svelte';
   import { currentPage, serverHealth, discoveryStatus } from '../lib/stores.js';
 
   const navItems = [
     { id: 'discovery', label: 'Discovery', icon: Search, color: 'cyan' },
     { id: 'top-strategies', label: 'Top 20', icon: Trophy, color: 'yellow' },
+    { id: 'playbook', label: 'Playbook', icon: BookOpen, color: 'violet' },
     { id: 'knowledge', label: 'Knowledge Base', icon: Database, color: 'emerald' },
     { id: 'optimizer', label: 'Optimizer', icon: Sparkles, color: 'amber' },
   ];
@@ -12,6 +13,7 @@
   const colorMap = {
     cyan: { active: 'bg-cyan-600 text-white', dot: 'bg-cyan-400' },
     yellow: { active: 'bg-yellow-600 text-white', dot: 'bg-yellow-400' },
+    violet: { active: 'bg-violet-600 text-white', dot: 'bg-violet-400' },
     emerald: { active: 'bg-emerald-600 text-white', dot: 'bg-emerald-400' },
     amber: { active: 'bg-amber-600 text-white', dot: 'bg-amber-400' },
   };

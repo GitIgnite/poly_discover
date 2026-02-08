@@ -55,7 +55,7 @@
   // ============================================================================
   const unsubscribe = discoveryStatus.subscribe(status => {
     if (status.running && !autoRefreshInterval) {
-      autoRefreshInterval = setInterval(loadKnowledgeBase, 5000);
+      autoRefreshInterval = setInterval(loadKnowledgeBase, 60000);
     } else if (!status.running && autoRefreshInterval) {
       clearInterval(autoRefreshInterval);
       autoRefreshInterval = null;
@@ -254,19 +254,19 @@
         <table class="w-full text-sm">
           <thead>
             <tr class="text-gray-400 text-xs uppercase border-b border-gray-700">
-              <th class="px-3 py-2 text-left">#</th>
-              <th class="px-3 py-2 text-left">Strategy</th>
-              <th class="px-3 py-2 text-left">Symbol</th>
-              <th class="px-3 py-2 text-right">Conf.</th>
-              <th class="px-3 py-2 text-right">Score</th>
-              <th class="px-3 py-2 text-right">Net PnL</th>
-              <th class="px-3 py-2 text-right">Win Rate</th>
-              <th class="px-3 py-2 text-right">Ann. Ret.</th>
-              <th class="px-3 py-2 text-right">Sharpe</th>
-              <th class="px-3 py-2 text-right">Sortino</th>
-              <th class="px-3 py-2 text-right">Drawdown</th>
-              <th class="px-3 py-2 text-right">Trades</th>
-              <th class="px-3 py-2 text-left">Params</th>
+              <th class="px-3 py-2 text-left" title="Row number in the current page">#</th>
+              <th class="px-3 py-2 text-left" title="Strategy name and type (single indicator, combo, or arbitrage)">Strategy</th>
+              <th class="px-3 py-2 text-left" title="Trading pair used for backtest (Binance symbol)">Symbol</th>
+              <th class="px-3 py-2 text-right" title="Strategy confidence (0-100%) — consistency across 4 time quartiles. Green >=70%, Yellow >=40%, Red <40%">Conf.</th>
+              <th class="px-3 py-2 text-right" title="Composite score combining PnL, win rate, Sharpe, drawdown, profit factor, confidence bonus, and Sortino bonus">Score</th>
+              <th class="px-3 py-2 text-right" title="Net profit/loss in USDC after Polymarket taker fees">Net PnL</th>
+              <th class="px-3 py-2 text-right" title="Percentage of trades that were profitable">Win Rate</th>
+              <th class="px-3 py-2 text-right" title="Annualized return: (1 + total_return) ^ (365 / days) - 1">Ann. Ret.</th>
+              <th class="px-3 py-2 text-right" title="Sharpe ratio — risk-adjusted return (excess return / standard deviation). Higher is better, >1 is good, >2 is excellent">Sharpe</th>
+              <th class="px-3 py-2 text-right" title="Sortino ratio — like Sharpe but only penalizes downside volatility. Higher is better">Sortino</th>
+              <th class="px-3 py-2 text-right" title="Maximum drawdown — largest peak-to-trough decline during the backtest period">Drawdown</th>
+              <th class="px-3 py-2 text-right" title="Total number of trades executed during the backtest">Trades</th>
+              <th class="px-3 py-2 text-left" title="Strategy parameters as JSON (indicator settings, thresholds, periods)">Params</th>
             </tr>
           </thead>
           <tbody>

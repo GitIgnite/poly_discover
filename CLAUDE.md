@@ -86,12 +86,13 @@ crates/
 
 ```
 src/
-├── App.svelte              Page router + global discovery polling (every 2s)
+├── App.svelte              Page router + global discovery polling (every 30s)
 ├── lib/api.js              All backend HTTP calls (discover, cancel, knowledge, top-strategies, optimize, binance)
 ├── lib/stores.js           Svelte writable stores (currentPage, serverHealth, discoveryStatus)
 ├── pages/
 │   ├── Discovery.svelte    Start/Stop button, reads global discoveryStatus store
 │   ├── TopStrategies.svelte Top 20 unique strategies by win rate, podium, auto-refresh
+│   ├── Playbook.svelte     Top 10 by PnL with AI-readable strategy descriptions
 │   ├── KnowledgeBase.svelte Auto-refresh when discovery running, LIVE badge
 │   └── Optimizer.svelte    Parameter optimization UI
 └── components/
@@ -107,9 +108,10 @@ Le statut discovery est géré au niveau **App.svelte** (pas dans Discovery.svel
 - **`discoveryStatus` store** (`stores.js`) : contient running, phase, progress, cycle, best_so_far, etc.
 - **Polling global** (App.svelte) : toutes les 2s, appelle `/api/discover/status` et met à jour le store
 - **Discovery.svelte** : lit le store, affiche Start/Stop, aucun polling local
-- **TopStrategies.svelte** : top 20 dédupliqué par `strategy_name`, auto-refresh 5s, podium top 3, badge LIVE
-- **KnowledgeBase.svelte** : auto-refresh toutes les 5s quand `$discoveryStatus.running === true`, badge LIVE
-- **Sidebar.svelte** : pulse dot animé + compteur quand discovery tourne (4 nav items: Discovery, Top 20, Knowledge Base, Optimizer)
+- **TopStrategies.svelte** : top 20 dédupliqué par `strategy_name`, auto-refresh 60s, podium top 3, badge LIVE
+- **Playbook.svelte** : top 10 par PnL, descriptions AI-readable avec paramètres, règles de trading, mapping Polymarket, bouton Copy
+- **KnowledgeBase.svelte** : auto-refresh toutes les 60s quand `$discoveryStatus.running === true`, badge LIVE
+- **Sidebar.svelte** : pulse dot animé + compteur quand discovery tourne (6 nav items: Discovery, Top 20, Playbook, Knowledge Base, Optimizer)
 
 ## Strategy Catalog
 
@@ -235,7 +237,7 @@ Le système utilise une estimation dynamique de probabilité basée sur le chang
 | POST | `/api/optimize` | Start parameter optimization |
 | GET | `/api/optimize/status` | Poll optimization progress |
 | GET | `/api/knowledge` | Paginated backtest results |
-| GET | `/api/knowledge/top-strategies` | Top unique strategies (deduplicated by name) |
+| GET | `/api/knowledge/top-strategies` | Top unique strategies (deduplicated, sort_by param) |
 | GET | `/api/knowledge/stats` | Aggregated statistics |
 | GET | `/api/export` | Export results as JSON |
 | GET | `/api/binance/klines` | Proxy to Binance API |
@@ -325,6 +327,31 @@ Ports à ouvrir dans le Security Group EC2 :
 | 4000 | poly-discover |
 
 ## Historique des changements récents
+
+### Page Playbook — Top 10 par PnL avec descriptions AI-readable (2026-02-08)
+
+**Nouvelle page** "Strategy Playbook" affichant les 10 meilleures stratégies dédupliquées par Net PnL, avec pour chacune :
+- Card avec métriques clés (PnL, Win Rate, Sharpe, Confidence)
+- Tableau de paramètres avec descriptions
+- Description AI-readable complète (indicator setup, trading rules, mapping Polymarket YES/NO, position sizing, backtest results)
+- Bouton "Copy" pour copier la description dans le presse-papier
+
+**Changements backend :**
+- `crates/persistence/src/repository/discovery.rs` : `get_top_unique_strategies()` accepte maintenant `sort_by` (win_rate, net_pnl, composite_score)
+- `crates/server/src/main.rs` : endpoint `/api/knowledge/top-strategies` supporte query param `sort_by`
+
+**Changements frontend :**
+- `src/lib/api.js` : `getTopStrategies(limit, sortBy)` accepte un paramètre de tri
+- `src/pages/Playbook.svelte` : nouvelle page avec `generateAIDescription()` couvrant les 22 stratégies, `parseParams()`, `getTradingRules()`, `getIndicatorSetup()`
+- `src/App.svelte` : routing `playbook`
+- `src/components/Sidebar.svelte` : item "Playbook" avec icône BookOpen (violet)
+
+**Réduction des intervalles de polling :**
+- Discovery status polling : 2s → 30s
+- KnowledgeBase auto-refresh : 5s → 60s
+- TopStrategies auto-refresh : 5s → 60s
+
+---
 
 ### Page Top 20 Strategies — Classement dédupliqué par win rate (2026-02-08)
 

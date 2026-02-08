@@ -274,16 +274,23 @@ impl<'a> DiscoveryRepository<'a> {
         Ok((records, total))
     }
 
-    /// Get top unique strategies (one per strategy_name, best win rate), deduplicated
+    /// Get top unique strategies (one per strategy_name), deduplicated by sort_by column
     pub async fn get_top_unique_strategies(
         &self,
         limit: i64,
+        sort_by: Option<&str>,
     ) -> DbResult<Vec<DiscoveryBacktestRecord>> {
-        let records = sqlx::query_as::<_, DiscoveryBacktestRecord>(
+        let order_col = match sort_by {
+            Some("net_pnl") => "CAST(net_pnl AS REAL)",
+            Some("composite_score") => "CAST(composite_score AS REAL)",
+            _ => "CAST(win_rate AS REAL)",
+        };
+
+        let sql = format!(
             r#"
             WITH ranked AS (
               SELECT *,
-                ROW_NUMBER() OVER (PARTITION BY strategy_name ORDER BY CAST(win_rate AS REAL) DESC) as rn
+                ROW_NUMBER() OVER (PARTITION BY strategy_name ORDER BY {order_col} DESC) as rn
               FROM discovery_backtests
               WHERE total_trades >= 5
             )
@@ -297,13 +304,15 @@ impl<'a> DiscoveryRepository<'a> {
                    sortino_ratio, max_consecutive_losses, avg_win_pnl, avg_loss_pnl,
                    total_volume, annualized_return_pct, annualized_sharpe, strategy_confidence
             FROM ranked WHERE rn = 1
-            ORDER BY CAST(win_rate AS REAL) DESC
+            ORDER BY {order_col} DESC
             LIMIT ?
-            "#,
-        )
-        .bind(limit)
-        .fetch_all(self.pool)
-        .await?;
+            "#
+        );
+
+        let records = sqlx::query_as::<_, DiscoveryBacktestRecord>(&sql)
+            .bind(limit)
+            .fetch_all(self.pool)
+            .await?;
 
         Ok(records)
     }

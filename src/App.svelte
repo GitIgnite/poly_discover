@@ -5,6 +5,7 @@
   import KnowledgeBase from './pages/KnowledgeBase.svelte';
   import Optimizer from './pages/Optimizer.svelte';
   import TopStrategies from './pages/TopStrategies.svelte';
+  import Playbook from './pages/Playbook.svelte';
   import { currentPage, serverHealth, discoveryStatus } from './lib/stores.js';
   import { checkHealth, getDiscoveryStatus } from './lib/api.js';
 
@@ -41,7 +42,7 @@
 
   // Poll immediately on startup, then every 2s
   pollDiscovery();
-  const discoveryInterval = setInterval(pollDiscovery, 2000);
+  const discoveryInterval = setInterval(pollDiscovery, 30000);
 
   onDestroy(() => {
     clearInterval(healthInterval);
@@ -56,6 +57,8 @@
     <KnowledgeBase />
   {:else if $currentPage === 'top-strategies'}
     <TopStrategies />
+  {:else if $currentPage === 'playbook'}
+    <Playbook />
   {:else if $currentPage === 'optimizer'}
     <Optimizer />
   {/if}
