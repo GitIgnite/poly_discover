@@ -102,9 +102,9 @@ export async function getKnowledgeStats() {
   }
 }
 
-export async function getTopStrategies(limit = 20) {
+export async function getTopStrategies(limit = 20, sortBy = 'win_rate') {
   try {
-    return await apiCall(`/api/knowledge/top-strategies?limit=${limit}`);
+    return await apiCall(`/api/knowledge/top-strategies?limit=${limit}&sort_by=${sortBy}`);
   } catch (e) {
     return { success: false, data: [], total: 0, error: String(e) };
   }
