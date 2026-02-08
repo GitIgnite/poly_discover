@@ -4,29 +4,20 @@
   import { discoveryStatus } from '../lib/stores.js';
   import { BookOpen, Loader2, Copy, Check } from 'lucide-svelte';
 
-  // ============================================================================
-  // State
-  // ============================================================================
   let strategies = $state([]);
   let loading = $state(false);
   let autoRefreshInterval = $state(null);
   let copiedIdx = $state(-1);
 
-  // ============================================================================
-  // Data loading
-  // ============================================================================
   async function loadStrategies() {
     loading = true;
-    const res = await getTopStrategies(10, 'net_pnl');
+    const res = await getTopStrategies(3, 'win_rate');
     if (res.success !== false) {
       strategies = res.data || [];
     }
     loading = false;
   }
 
-  // ============================================================================
-  // Auto-refresh when discovery is running
-  // ============================================================================
   const unsubscribe = discoveryStatus.subscribe(status => {
     if (status.running && !autoRefreshInterval) {
       autoRefreshInterval = setInterval(loadStrategies, 60000);
@@ -42,185 +33,469 @@
     if (autoRefreshInterval) clearInterval(autoRefreshInterval);
   });
 
-  // ============================================================================
-  // Copy to clipboard
-  // ============================================================================
   async function copyDescription(text, idx) {
     await navigator.clipboard.writeText(text);
     copiedIdx = idx;
     setTimeout(() => { copiedIdx = -1; }, 2000);
   }
 
-  // ============================================================================
-  // Strategy descriptions — AI-readable
-  // ============================================================================
-
-  const paramDescriptions = {
-    period: 'Lookback period (number of candles)',
-    rsi_period: 'RSI lookback period (number of candles)',
-    overbought: 'Overbought threshold — sell when indicator exceeds this level',
-    oversold: 'Oversold threshold — buy when indicator drops below this level',
-    rsi_ob: 'RSI overbought threshold',
-    rsi_os: 'RSI oversold threshold',
-    rsi_overbought: 'RSI overbought threshold',
-    rsi_oversold: 'RSI oversold threshold',
-    multiplier: 'Band width multiplier (standard deviations from mean)',
-    bb_mult: 'Bollinger Bands multiplier (standard deviations)',
-    bb_period: 'Bollinger Bands SMA period',
-    fast: 'Fast EMA period for MACD line',
-    slow: 'Slow EMA period for MACD line',
-    signal: 'Signal line EMA period',
-    macd_fast: 'MACD fast EMA period',
-    macd_slow: 'MACD slow EMA period',
-    macd_signal: 'MACD signal line period',
-    fast_period: 'Fast EMA period',
-    slow_period: 'Slow EMA period',
-    ema_fast: 'Fast EMA period',
-    ema_slow: 'Slow EMA period',
-    stoch_period: 'Stochastic oscillator lookback period',
-    stoch_ob: 'Stochastic overbought threshold',
-    stoch_os: 'Stochastic oversold threshold',
-    stoch_overbought: 'Stochastic overbought threshold',
-    stoch_oversold: 'Stochastic oversold threshold',
-    atr_period: 'ATR (Average True Range) lookback period',
-    sma_period: 'Simple Moving Average period',
-    obv_sma_period: 'OBV Simple Moving Average period',
-    vwap_period: 'VWAP lookback period',
-    adx_period: 'ADX lookback period',
-    adx_threshold: 'ADX minimum strength threshold — only trade when trend is strong',
-    wr_period: 'Williams %R lookback period',
-    wr_overbought: 'Williams %R overbought level (near 0)',
-    wr_oversold: 'Williams %R oversold level (near -100)',
-    max_pair_cost: 'Maximum combined cost of YES+NO pair to enter arbitrage',
-    bid_offset: 'Offset below mid-price for maker order placement',
-    spread_multiplier: 'Multiplier for volatility-based spread calculation',
-  };
-
-  function getIndicatorSetup(type, params) {
-    const setups = {
-      rsi: () => `Configure RSI indicator with period=${params.period || params.rsi_period}. Overbought level at ${params.overbought || params.rsi_ob}, oversold level at ${params.oversold || params.rsi_os}.`,
-      bollinger_bands: () => `Configure Bollinger Bands with SMA period=${params.period || params.bb_period} and multiplier=${params.multiplier || params.bb_mult} standard deviations.`,
-      macd: () => `Configure MACD with fast EMA=${params.fast || params.macd_fast}, slow EMA=${params.slow || params.macd_slow}, signal line=${params.signal || params.macd_signal}.`,
-      ema_crossover: () => `Configure dual EMA crossover with fast period=${params.fast_period || params.ema_fast} and slow period=${params.slow_period || params.ema_slow}.`,
-      stochastic: () => `Configure Stochastic Oscillator with period=${params.period || params.stoch_period}. Overbought at ${params.overbought || params.stoch_ob}, oversold at ${params.oversold || params.stoch_os}.`,
-      atr_mean_reversion: () => `Configure ATR Mean Reversion with ATR period=${params.atr_period}, SMA period=${params.sma_period}, multiplier=${params.multiplier}. Measures distance from mean in ATR units.`,
-      vwap: () => `Configure VWAP (Volume Weighted Average Price) with period=${params.period || params.vwap_period}.`,
-      obv: () => `Configure OBV (On-Balance Volume) with SMA smoothing period=${params.sma_period || params.obv_sma_period}.`,
-      williams_r: () => `Configure Williams %R with period=${params.period || params.wr_period}. Overbought at ${params.overbought || params.wr_overbought} (near 0), oversold at ${params.oversold || params.wr_oversold} (near -100).`,
-      adx: () => `Configure ADX (Average Directional Index) with period=${params.period || params.adx_period}. Trend strength threshold=${params.adx_threshold}. Only trade when ADX > threshold.`,
-      rsi_bollinger: () => `Combine RSI (period=${params.rsi_period}, OB=${params.rsi_ob}, OS=${params.rsi_os}) with Bollinger Bands (period=${params.bb_period}, mult=${params.bb_mult}). Mode: UNANIMOUS — both must agree.`,
-      macd_rsi: () => `Combine MACD (fast=${params.macd_fast}, slow=${params.macd_slow}, signal=${params.macd_signal}) as PRIMARY with RSI (period=${params.rsi_period}, OB=${params.rsi_ob}, OS=${params.rsi_os}) as CONFIRMER.`,
-      ema_rsi: () => `Combine EMA Crossover (fast=${params.ema_fast}, slow=${params.ema_slow}) as PRIMARY with RSI (period=${params.rsi_period}, OB=${params.rsi_ob}, OS=${params.rsi_os}) as CONFIRMER.`,
-      stoch_rsi: () => `Combine Stochastic (period=${params.stoch_period}, OB=${params.stoch_ob}, OS=${params.stoch_os}) with RSI (period=${params.rsi_period}, OB=${params.rsi_ob}, OS=${params.rsi_os}). Mode: UNANIMOUS.`,
-      macd_bollinger: () => `Combine MACD (fast=${params.macd_fast}, slow=${params.macd_slow}, signal=${params.macd_signal}) as PRIMARY with Bollinger Bands (period=${params.bb_period}, mult=${params.bb_mult}) as CONFIRMER.`,
-      triple_rsi_macd_bb: () => `Triple indicator: RSI (period=${params.rsi_period}, OB=${params.rsi_ob}, OS=${params.rsi_os}) + MACD (fast=${params.macd_fast}, slow=${params.macd_slow}, signal=${params.macd_signal}) + Bollinger Bands (period=${params.bb_period}, mult=${params.bb_mult}). Mode: MAJORITY (2 out of 3 must agree).`,
-      triple_ema_rsi_stoch: () => `Triple indicator: EMA Crossover (fast=${params.ema_fast}, slow=${params.ema_slow}) + RSI (period=${params.rsi_period}, OB=${params.rsi_ob}, OS=${params.rsi_os}) + Stochastic (period=${params.stoch_period}, OB=${params.stoch_ob}, OS=${params.stoch_os}). Mode: MAJORITY (2 out of 3 must agree).`,
-      vwap_rsi: () => `Combine VWAP (period=${params.vwap_period}) as PRIMARY with RSI (period=${params.rsi_period}, OB=${params.rsi_overbought}, OS=${params.rsi_oversold}) as CONFIRMER.`,
-      obv_macd: () => `Combine MACD (fast=${params.macd_fast}, slow=${params.macd_slow}, signal=${params.macd_signal}) as PRIMARY with OBV (SMA period=${params.obv_sma_period}) as volume CONFIRMER.`,
-      adx_ema: () => `Combine EMA Crossover (fast=${params.ema_fast}, slow=${params.ema_slow}) as PRIMARY with ADX (period=${params.adx_period}, threshold=${params.adx_threshold}) as trend strength FILTER.`,
-      williams_r_stoch: () => `Combine Williams %R (period=${params.wr_period}, OB=${params.wr_overbought}, OS=${params.wr_oversold}) with Stochastic (period=${params.stoch_period}, OB=${params.stoch_overbought}, OS=${params.stoch_oversold}). Mode: UNANIMOUS.`,
-      gabagool: () => `Binary arbitrage engine. Each 15-min candle generates a synthetic Polymarket binary market. YES price = 0.50 + clamp(price_change × 5, -0.40, 0.40). NO price = 1.00 - YES. Spread = volatility × ${params.spread_multiplier}. Fill prices use bid_offset=${params.bid_offset}. Trade when YES_fill + NO_fill < ${params.max_pair_cost}.`,
-    };
-    return (setups[type] || (() => 'Unknown strategy type.'))();
+  function parseParams(jsonStr) {
+    try {
+      const obj = JSON.parse(jsonStr);
+      const keys = Object.keys(obj);
+      if (keys.length === 1 && typeof obj[keys[0]] === 'object') {
+        return obj[keys[0]];
+      }
+      return obj;
+    } catch {
+      return {};
+    }
   }
 
-  function getTradingRules(type, symbol) {
-    const sym = symbol.replace('USDT', '');
-    const rules = {
-      rsi: `BUY (Polymarket: Buy YES on "${sym} up in next 15min"): When RSI drops below oversold threshold.\nSELL (Polymarket: Buy NO on "${sym} up in next 15min"): When RSI rises above overbought threshold.\nHOLD: When RSI is between oversold and overbought levels.`,
-      bollinger_bands: `BUY (Polymarket: Buy YES on "${sym} up"): When price closes below the lower Bollinger Band — oversold, expect mean reversion up.\nSELL (Polymarket: Buy NO on "${sym} up"): When price closes above the upper Bollinger Band — overbought, expect mean reversion down.\nHOLD: When price is within the bands.`,
-      macd: `BUY (Polymarket: Buy YES on "${sym} up"): When MACD histogram crosses from negative to positive — bullish momentum shift.\nSELL (Polymarket: Buy NO on "${sym} up"): When MACD histogram crosses from positive to negative — bearish momentum shift.\nHOLD: When no histogram crossover occurs.`,
-      ema_crossover: `BUY (Polymarket: Buy YES on "${sym} up"): When fast EMA crosses above slow EMA (Golden Cross) — uptrend starting.\nSELL (Polymarket: Buy NO on "${sym} up"): When fast EMA crosses below slow EMA (Death Cross) — downtrend starting.\nHOLD: When no crossover occurs.`,
-      stochastic: `BUY (Polymarket: Buy YES on "${sym} up"): When %K crosses above %D in the oversold zone — reversal up expected.\nSELL (Polymarket: Buy NO on "${sym} up"): When %K crosses below %D in the overbought zone — reversal down expected.\nHOLD: When no crossover in extreme zones.`,
-      atr_mean_reversion: `BUY (Polymarket: Buy YES on "${sym} up"): When price < SMA - (ATR × multiplier) — extremely far below mean, expect reversion up.\nSELL (Polymarket: Buy NO on "${sym} up"): When price > SMA + (ATR × multiplier) — extremely far above mean, expect reversion down.\nHOLD: When price is within ATR bands of the mean.`,
-      vwap: `BUY (Polymarket: Buy YES on "${sym} up"): When price is below VWAP — undervalued relative to volume-weighted fair value.\nSELL (Polymarket: Buy NO on "${sym} up"): When price is above VWAP — overvalued relative to fair value.\nHOLD: When price is near VWAP.`,
-      obv: `BUY (Polymarket: Buy YES on "${sym} up"): When OBV > SMA(OBV) — volume flow supports bullish move.\nSELL (Polymarket: Buy NO on "${sym} up"): When OBV < SMA(OBV) — volume flow supports bearish move.\nHOLD: When OBV is near its SMA.`,
-      williams_r: `BUY (Polymarket: Buy YES on "${sym} up"): When Williams %R drops below oversold level (near -100) — extreme oversold.\nSELL (Polymarket: Buy NO on "${sym} up"): When Williams %R rises above overbought level (near 0) — extreme overbought.\nHOLD: When %R is between thresholds.`,
-      adx: `BUY (Polymarket: Buy YES on "${sym} up"): When ADX > threshold AND +DI > -DI — strong bullish trend confirmed.\nSELL (Polymarket: Buy NO on "${sym} up"): When ADX > threshold AND -DI > +DI — strong bearish trend confirmed.\nHOLD: When ADX < threshold (weak/no trend).`,
-      rsi_bollinger: `BUY (Polymarket: Buy YES on "${sym} up"): When BOTH RSI is oversold AND price is below lower Bollinger Band — double confirmation of oversold condition.\nSELL (Polymarket: Buy NO on "${sym} up"): When BOTH RSI is overbought AND price is above upper Bollinger Band.\nHOLD: When indicators disagree or neither triggers.`,
-      macd_rsi: `BUY (Polymarket: Buy YES on "${sym} up"): When MACD histogram crosses bullish (primary) AND RSI is not in overbought zone (confirms room to rise).\nSELL (Polymarket: Buy NO on "${sym} up"): When MACD histogram crosses bearish (primary) AND RSI is not oversold (confirms room to fall).\nHOLD: When MACD has no signal or RSI blocks confirmation.`,
-      ema_rsi: `BUY (Polymarket: Buy YES on "${sym} up"): When EMA golden cross occurs (primary) AND RSI confirms not overbought.\nSELL (Polymarket: Buy NO on "${sym} up"): When EMA death cross occurs (primary) AND RSI confirms not oversold.\nHOLD: When no EMA crossover or RSI blocks.`,
-      stoch_rsi: `BUY (Polymarket: Buy YES on "${sym} up"): When BOTH Stochastic crosses up in oversold zone AND RSI is oversold — double oscillator confirmation.\nSELL (Polymarket: Buy NO on "${sym} up"): When BOTH Stochastic crosses down in overbought zone AND RSI is overbought.\nHOLD: When oscillators disagree.`,
-      macd_bollinger: `BUY (Polymarket: Buy YES on "${sym} up"): When MACD crosses bullish (primary) AND price is near lower Bollinger Band (confirms oversold).\nSELL (Polymarket: Buy NO on "${sym} up"): When MACD crosses bearish (primary) AND price is near upper Bollinger Band.\nHOLD: When MACD has no signal or BB doesn't confirm.`,
-      triple_rsi_macd_bb: `BUY (Polymarket: Buy YES on "${sym} up"): When at least 2 out of 3 indicators (RSI, MACD, Bollinger) signal BUY — majority vote.\nSELL (Polymarket: Buy NO on "${sym} up"): When at least 2 out of 3 signal SELL.\nHOLD: When no majority consensus (e.g., 1 buy, 1 sell, 1 hold).`,
-      triple_ema_rsi_stoch: `BUY (Polymarket: Buy YES on "${sym} up"): When at least 2 out of 3 indicators (EMA Cross, RSI, Stochastic) signal BUY.\nSELL (Polymarket: Buy NO on "${sym} up"): When at least 2 out of 3 signal SELL.\nHOLD: When no majority consensus.`,
-      vwap_rsi: `BUY (Polymarket: Buy YES on "${sym} up"): When price < VWAP (primary) AND RSI confirms not overbought.\nSELL (Polymarket: Buy NO on "${sym} up"): When price > VWAP (primary) AND RSI confirms not oversold.\nHOLD: When VWAP has no signal or RSI blocks.`,
-      obv_macd: `BUY (Polymarket: Buy YES on "${sym} up"): When MACD crosses bullish (primary) AND OBV is above its SMA (volume confirms momentum).\nSELL (Polymarket: Buy NO on "${sym} up"): When MACD crosses bearish (primary) AND OBV is below its SMA.\nHOLD: When MACD has no signal or volume doesn't confirm.`,
-      adx_ema: `BUY (Polymarket: Buy YES on "${sym} up"): When EMA golden cross occurs (primary) AND ADX > threshold (strong trend confirmed).\nSELL (Polymarket: Buy NO on "${sym} up"): When EMA death cross occurs (primary) AND ADX > threshold.\nHOLD: When no EMA crossover or ADX indicates weak trend.`,
-      williams_r_stoch: `BUY (Polymarket: Buy YES on "${sym} up"): When BOTH Williams %R is oversold AND Stochastic crosses up in oversold zone — double confirmation.\nSELL (Polymarket: Buy NO on "${sym} up"): When BOTH Williams %R is overbought AND Stochastic crosses down in overbought zone.\nHOLD: When oscillators disagree.`,
-      gabagool: `This is a NON-DIRECTIONAL arbitrage strategy. It does NOT predict price direction.\nTRADE: When the combined cost of buying YES + NO < max_pair_cost — buy BOTH sides to lock guaranteed profit = 1.00 - pair_cost.\nSKIP: When pair cost is too high (no arbitrage opportunity).\nProfit is guaranteed regardless of outcome since YES + NO always pays 1.00.`,
-    };
-    return (rules[type] || 'Unknown strategy type.')();
-  }
-
-  function generateFullDescription(row) {
-    const parsed = parseParams(row.strategy_params);
-    const params = parsed.values;
+  // ============================================================================
+  // Polymarket essential parameters table
+  // ============================================================================
+  function getPolymarketParams(row) {
+    const p = parseParams(row.strategy_params);
     const type = row.strategy_type;
-    const pnl = parseFloat(row.net_pnl);
+    const sym = row.symbol.replace('USDT', '');
+
+    const common = [
+      { param: 'Marché', value: `"${sym} up in next 15 minutes?"`, desc: 'Marché binaire Polymarket cible' },
+      { param: 'Timeframe', value: '15 minutes', desc: 'Intervalle des bougies Binance (klines 15m)' },
+      { param: 'Source de données', value: `Binance ${row.symbol} klines`, desc: 'Feed de prix temps réel à connecter au bot' },
+      { param: 'Sizing', value: row.sizing_mode, desc: row.sizing_mode === 'fixed' ? 'Taille fixe $10 par trade' : row.sizing_mode === 'kelly' ? 'Kelly criterion: taille proportionnelle à l\'edge' : 'Pondéré par confiance du signal (0.3-1.0)' },
+    ];
+
+    const indicators = getIndicatorParams(type, p);
+    const signals = getSignalParams(type, p, sym);
+
+    return [...common, ...indicators, ...signals];
+  }
+
+  function getIndicatorParams(type, p) {
+    const m = {
+      rsi: () => [
+        { param: 'Indicateur', value: 'RSI', desc: 'Relative Strength Index — oscillateur de momentum' },
+        { param: 'RSI période', value: p.period, desc: `Calculer le RSI sur les ${p.period} dernières bougies de 15min` },
+        { param: 'Seuil survente', value: p.oversold, desc: `Signal ACHAT quand RSI < ${p.oversold}` },
+        { param: 'Seuil surachat', value: p.overbought, desc: `Signal VENTE quand RSI > ${p.overbought}` },
+      ],
+      bollinger_bands: () => [
+        { param: 'Indicateur', value: 'Bollinger Bands', desc: 'Bandes de Bollinger — mesure la volatilité autour de la moyenne' },
+        { param: 'BB période', value: p.period, desc: `SMA calculée sur ${p.period} bougies` },
+        { param: 'BB multiplicateur', value: p.multiplier, desc: `Bandes à ${p.multiplier} écarts-types de la SMA` },
+      ],
+      macd: () => [
+        { param: 'Indicateur', value: 'MACD', desc: 'Moving Average Convergence Divergence — momentum' },
+        { param: 'EMA rapide', value: p.fast, desc: `EMA courte sur ${p.fast} bougies` },
+        { param: 'EMA lente', value: p.slow, desc: `EMA longue sur ${p.slow} bougies` },
+        { param: 'Signal', value: p.signal, desc: `Ligne de signal: EMA du MACD sur ${p.signal} bougies` },
+      ],
+      ema_crossover: () => [
+        { param: 'Indicateur', value: 'EMA Crossover', desc: 'Croisement de moyennes mobiles exponentielles' },
+        { param: 'EMA rapide', value: p.fast_period, desc: `EMA courte sur ${p.fast_period} bougies` },
+        { param: 'EMA lente', value: p.slow_period, desc: `EMA longue sur ${p.slow_period} bougies` },
+      ],
+      stochastic: () => [
+        { param: 'Indicateur', value: 'Stochastic', desc: 'Oscillateur stochastique — position du prix dans la range' },
+        { param: 'Période', value: p.period, desc: `Lookback sur ${p.period} bougies` },
+        { param: 'Seuil survente', value: p.oversold, desc: `Zone de survente: %K < ${p.oversold}` },
+        { param: 'Seuil surachat', value: p.overbought, desc: `Zone de surachat: %K > ${p.overbought}` },
+      ],
+      atr_mean_reversion: () => [
+        { param: 'Indicateur', value: 'ATR Mean Reversion', desc: 'Retour à la moyenne basé sur l\'Average True Range' },
+        { param: 'ATR période', value: p.atr_period, desc: `ATR calculé sur ${p.atr_period} bougies` },
+        { param: 'SMA période', value: p.sma_period, desc: `Moyenne mobile sur ${p.sma_period} bougies` },
+        { param: 'Multiplicateur', value: p.multiplier, desc: `Seuil de distance: ${p.multiplier} × ATR au-dessus/dessous de la SMA` },
+      ],
+      vwap: () => [
+        { param: 'Indicateur', value: 'VWAP', desc: 'Volume Weighted Average Price — prix moyen pondéré par volume' },
+        { param: 'Période', value: p.period, desc: `VWAP calculé sur ${p.period} bougies` },
+      ],
+      obv: () => [
+        { param: 'Indicateur', value: 'OBV', desc: 'On-Balance Volume — flux de volume cumulé' },
+        { param: 'SMA période', value: p.sma_period, desc: `Lissage de l'OBV par SMA sur ${p.sma_period} bougies` },
+      ],
+      williams_r: () => [
+        { param: 'Indicateur', value: 'Williams %R', desc: 'Williams Percent Range — oscillateur de momentum (-100 à 0)' },
+        { param: 'Période', value: p.period, desc: `Lookback sur ${p.period} bougies` },
+        { param: 'Seuil survente', value: p.oversold, desc: `Signal ACHAT quand %R < ${p.oversold}` },
+        { param: 'Seuil surachat', value: p.overbought, desc: `Signal VENTE quand %R > ${p.overbought}` },
+      ],
+      adx: () => [
+        { param: 'Indicateur', value: 'ADX', desc: 'Average Directional Index — force de la tendance' },
+        { param: 'Période', value: p.period, desc: `ADX calculé sur ${p.period} bougies` },
+        { param: 'Seuil force', value: p.adx_threshold, desc: `Ne trader que si ADX > ${p.adx_threshold} (tendance forte)` },
+      ],
+      rsi_bollinger: () => [
+        { param: 'Indicateurs', value: 'RSI + Bollinger Bands', desc: 'Combo: les DEUX doivent être d\'accord (mode Unanime)' },
+        { param: 'RSI période', value: p.rsi_period, desc: `RSI sur ${p.rsi_period} bougies` },
+        { param: 'RSI survente/surachat', value: `${p.rsi_os} / ${p.rsi_ob}`, desc: 'Seuils RSI bas/haut' },
+        { param: 'BB période', value: p.bb_period, desc: `Bollinger SMA sur ${p.bb_period} bougies` },
+        { param: 'BB multiplicateur', value: p.bb_mult, desc: `Bandes à ${p.bb_mult} écarts-types` },
+      ],
+      macd_rsi: () => [
+        { param: 'Indicateurs', value: 'MACD (primaire) + RSI (filtre)', desc: 'MACD donne le signal, RSI confirme' },
+        { param: 'MACD fast/slow/signal', value: `${p.macd_fast}/${p.macd_slow}/${p.macd_signal}`, desc: 'Paramètres MACD' },
+        { param: 'RSI période', value: p.rsi_period, desc: `RSI sur ${p.rsi_period} bougies` },
+        { param: 'RSI survente/surachat', value: `${p.rsi_os} / ${p.rsi_ob}`, desc: 'RSI ne doit pas bloquer le signal' },
+      ],
+      ema_rsi: () => [
+        { param: 'Indicateurs', value: 'EMA Cross (primaire) + RSI (filtre)', desc: 'EMA donne le signal, RSI confirme' },
+        { param: 'EMA rapide/lente', value: `${p.ema_fast} / ${p.ema_slow}`, desc: 'Paramètres croisement EMA' },
+        { param: 'RSI période', value: p.rsi_period, desc: `RSI sur ${p.rsi_period} bougies` },
+        { param: 'RSI survente/surachat', value: `${p.rsi_os} / ${p.rsi_ob}`, desc: 'Seuils de filtrage RSI' },
+      ],
+      stoch_rsi: () => [
+        { param: 'Indicateurs', value: 'Stochastic + RSI', desc: 'Double oscillateur — les DEUX doivent confirmer (Unanime)' },
+        { param: 'Stoch période', value: p.stoch_period, desc: `Stochastique sur ${p.stoch_period} bougies` },
+        { param: 'Stoch survente/surachat', value: `${p.stoch_os} / ${p.stoch_ob}`, desc: 'Seuils Stochastique' },
+        { param: 'RSI période', value: p.rsi_period, desc: `RSI sur ${p.rsi_period} bougies` },
+        { param: 'RSI survente/surachat', value: `${p.rsi_os} / ${p.rsi_ob}`, desc: 'Seuils RSI' },
+      ],
+      macd_bollinger: () => [
+        { param: 'Indicateurs', value: 'MACD (primaire) + BB (filtre)', desc: 'MACD donne le signal, BB confirme la zone' },
+        { param: 'MACD fast/slow/signal', value: `${p.macd_fast}/${p.macd_slow}/${p.macd_signal}`, desc: 'Paramètres MACD' },
+        { param: 'BB période/mult', value: `${p.bb_period} / ${p.bb_mult}`, desc: 'Paramètres Bollinger' },
+      ],
+      triple_rsi_macd_bb: () => [
+        { param: 'Indicateurs', value: 'RSI + MACD + BB', desc: 'Triple combo — vote majoritaire (2/3 doivent être d\'accord)' },
+        { param: 'RSI', value: `p=${p.rsi_period} OS=${p.rsi_os} OB=${p.rsi_ob}`, desc: 'Paramètres RSI' },
+        { param: 'MACD', value: `${p.macd_fast}/${p.macd_slow}/${p.macd_signal}`, desc: 'Paramètres MACD' },
+        { param: 'BB', value: `p=${p.bb_period} m=${p.bb_mult}`, desc: 'Paramètres Bollinger' },
+      ],
+      triple_ema_rsi_stoch: () => [
+        { param: 'Indicateurs', value: 'EMA + RSI + Stoch', desc: 'Triple combo — vote majoritaire (2/3)' },
+        { param: 'EMA', value: `fast=${p.ema_fast} slow=${p.ema_slow}`, desc: 'Paramètres EMA' },
+        { param: 'RSI', value: `p=${p.rsi_period} OS=${p.rsi_os} OB=${p.rsi_ob}`, desc: 'Paramètres RSI' },
+        { param: 'Stoch', value: `p=${p.stoch_period} OS=${p.stoch_os} OB=${p.stoch_ob}`, desc: 'Paramètres Stochastique' },
+      ],
+      vwap_rsi: () => [
+        { param: 'Indicateurs', value: 'VWAP (primaire) + RSI (filtre)', desc: 'VWAP donne le signal, RSI confirme' },
+        { param: 'VWAP période', value: p.vwap_period, desc: `VWAP sur ${p.vwap_period} bougies` },
+        { param: 'RSI', value: `p=${p.rsi_period} OS=${p.rsi_oversold} OB=${p.rsi_overbought}`, desc: 'Paramètres RSI de filtrage' },
+      ],
+      obv_macd: () => [
+        { param: 'Indicateurs', value: 'MACD (primaire) + OBV (volume)', desc: 'MACD donne le signal, OBV confirme par le volume' },
+        { param: 'MACD', value: `${p.macd_fast}/${p.macd_slow}/${p.macd_signal}`, desc: 'Paramètres MACD' },
+        { param: 'OBV SMA', value: p.obv_sma_period, desc: `Lissage OBV sur ${p.obv_sma_period} bougies` },
+      ],
+      adx_ema: () => [
+        { param: 'Indicateurs', value: 'EMA Cross (primaire) + ADX (filtre)', desc: 'EMA donne le signal, ADX filtre les tendances faibles' },
+        { param: 'EMA rapide/lente', value: `${p.ema_fast} / ${p.ema_slow}`, desc: 'Paramètres EMA' },
+        { param: 'ADX', value: `p=${p.adx_period} seuil=${p.adx_threshold}`, desc: `Ne trader que si ADX > ${p.adx_threshold}` },
+      ],
+      williams_r_stoch: () => [
+        { param: 'Indicateurs', value: 'Williams %R + Stochastic', desc: 'Double oscillateur — les DEUX doivent confirmer (Unanime)' },
+        { param: 'Williams %R', value: `p=${p.wr_period} OS=${p.wr_oversold} OB=${p.wr_overbought}`, desc: 'Paramètres Williams' },
+        { param: 'Stoch', value: `p=${p.stoch_period} OS=${p.stoch_oversold} OB=${p.stoch_overbought}`, desc: 'Paramètres Stochastique' },
+      ],
+      gabagool: () => [
+        { param: 'Type', value: 'Arbitrage binaire', desc: 'Non-directionnel — achète les DEUX côtés YES et NO' },
+        { param: 'Max pair cost', value: p.max_pair_cost, desc: `Coût max YES+NO pour entrer (profit = 1.00 - coût)` },
+        { param: 'Bid offset', value: p.bid_offset, desc: 'Décalage sous le mid-price pour ordres maker' },
+        { param: 'Spread multiplier', value: p.spread_multiplier, desc: 'Multiplicateur du spread basé sur la volatilité' },
+      ],
+    };
+    return (m[type] || (() => []))();
+  }
+
+  function getSignalParams(type, p, sym) {
+    if (type === 'gabagool') {
+      return [
+        { param: '→ Action', value: 'BUY YES + BUY NO', desc: `Quand YES_fill + NO_fill < ${p.max_pair_cost} → profit garanti` },
+        { param: '→ Skip', value: 'Pas de trade', desc: 'Quand pair_cost trop élevé, aucune opportunité d\'arbitrage' },
+      ];
+    }
+    return [
+      { param: '→ Signal ACHAT', value: `Buy YES sur "${sym} up"`, desc: 'Acheter token YES sur Polymarket (pari haussier)' },
+      { param: '→ Signal VENTE', value: `Buy NO sur "${sym} up"`, desc: 'Acheter token NO sur Polymarket (pari baissier)' },
+      { param: '→ Aucun signal', value: 'HOLD — ne rien faire', desc: 'Attendre le prochain signal, ne pas forcer de trade' },
+    ];
+  }
+
+  // ============================================================================
+  // Bot implementation description — ultra detailed
+  // ============================================================================
+  function generateBotDescription(row) {
+    const p = parseParams(row.strategy_params);
+    const type = row.strategy_type;
+    const sym = row.symbol.replace('USDT', '');
     const wr = parseFloat(row.win_rate);
+    const pnl = parseFloat(row.net_pnl);
     const sharpe = parseFloat(row.sharpe_ratio);
     const sortino = parseFloat(row.sortino_ratio || 0);
     const dd = parseFloat(row.max_drawdown_pct);
     const conf = parseFloat(row.strategy_confidence || 0);
     const annRet = parseFloat(row.annualized_return_pct || 0);
+    const pf = parseFloat(row.profit_factor);
+    const maxLoss = row.max_consecutive_losses || 0;
 
-    let text = `## ${row.strategy_name} on ${row.symbol}\n`;
-    text += `Timeframe: 15-minute candles (Binance klines) | Backtest period: ${row.days} days\n\n`;
+    let t = '';
+    t += `=== STRATÉGIE DE TRADING POLYMARKET ===\n`;
+    t += `Nom: ${row.strategy_name}\n`;
+    t += `Marché cible: "${sym} up in next 15 minutes?" (marché binaire Polymarket)\n`;
+    t += `Paire de référence: ${row.symbol} sur Binance\n`;
+    t += `Timeframe: bougies de 15 minutes (klines Binance intervalle "15m")\n`;
+    t += `Période de backtest: ${row.days} jours\n\n`;
 
-    text += `### Indicator Setup\n`;
-    text += getIndicatorSetup(type, params) + '\n\n';
+    t += `=== CONFIGURATION DU BOT ===\n\n`;
 
-    text += `### Parameters\n`;
-    for (const [key, val] of Object.entries(params)) {
-      const desc = paramDescriptions[key] || '';
-      text += `- ${key} = ${val}${desc ? ' — ' + desc : ''}\n`;
-    }
-    text += '\n';
+    t += `1. SOURCE DE DONNÉES\n`;
+    t += `   - Connecter le bot à l'API Binance WebSocket ou REST\n`;
+    t += `   - Endpoint: GET /api/v3/klines?symbol=${row.symbol}&interval=15m\n`;
+    t += `   - Récupérer les bougies OHLCV (Open, High, Low, Close, Volume)\n`;
+    t += `   - Maintenir un buffer des ${getMaxPeriod(type, p)} dernières bougies minimum\n\n`;
 
-    text += `### Trading Rules\n`;
-    text += getTradingRules(type, row.symbol) + '\n\n';
+    t += `2. CALCUL DES INDICATEURS\n`;
+    t += getDetailedIndicatorCalc(type, p);
+    t += '\n';
 
-    text += `### Position Sizing\n`;
-    text += `Mode: ${row.sizing_mode} | `;
-    if (row.sizing_mode === 'fixed') text += 'Fixed position size of $10 per trade.\n';
-    else if (row.sizing_mode === 'kelly') text += 'Kelly criterion — position size proportional to edge/odds ratio.\n';
-    else text += 'Confidence-weighted — position size scales with signal confidence (0.3-1.0).\n';
-    text += '\n';
+    t += `3. LOGIQUE DE SIGNAUX\n`;
+    t += getDetailedSignalLogic(type, p, sym);
+    t += '\n';
 
-    text += `### Polymarket Execution\n`;
+    t += `4. EXÉCUTION SUR POLYMARKET\n`;
     if (type === 'gabagool') {
-      text += `Market type: Binary crypto prediction (e.g., "Will BTC go up in the next 15 minutes?")\n`;
-      text += `Execution: Place maker orders on BOTH YES and NO sides simultaneously.\n`;
-      text += `Profit mechanism: Guaranteed profit when YES_fill + NO_fill < 1.00 (after fees).\n`;
+      t += `   Sur signal TRADE:\n`;
+      t += `     a. Calculer le mid-price YES et NO du marché "${sym} up?"\n`;
+      t += `     b. Placer un ordre LIMIT BUY YES à (mid_yes - spread/2 - ${p.bid_offset})\n`;
+      t += `     c. Placer un ordre LIMIT BUY NO  à (mid_no  - spread/2 - ${p.bid_offset})\n`;
+      t += `     d. Si les deux ordres sont remplis et coût total < ${p.max_pair_cost} → profit = 1.00 - coût\n`;
+      t += `     e. Attendre la résolution du marché (15 min) — le profit est garanti quel que soit le résultat\n`;
+      t += `   Sur signal SKIP:\n`;
+      t += `     - Ne rien faire, attendre la prochaine bougie\n`;
     } else {
-      text += `Market type: Binary crypto prediction (e.g., "Will ${row.symbol.replace('USDT', '')} go up in the next 15 minutes?")\n`;
-      text += `On BUY signal: Purchase YES tokens (betting price will rise).\n`;
-      text += `On SELL signal: Purchase NO tokens (betting price will fall).\n`;
-      text += `Fee model: Polymarket taker fee = C × feeRate × (p × (1-p))^2 where p = estimated probability.\n`;
+      t += `   Sur signal ACHAT (BUY):\n`;
+      t += `     a. Ouvrir le marché "${sym} up in next 15 minutes?" sur Polymarket\n`;
+      t += `     b. Acheter des tokens YES au prix du marché\n`;
+      t += `     c. Taille de position: ${row.sizing_mode === 'fixed' ? '$10 fixe' : row.sizing_mode === 'kelly' ? 'Kelly criterion (edge/odds)' : 'pondérée par confiance du signal'}\n`;
+      t += `     d. Attendre la résolution du marché (15 min)\n`;
+      t += `   Sur signal VENTE (SELL):\n`;
+      t += `     a. Acheter des tokens NO sur le même marché\n`;
+      t += `     b. Même taille de position que pour un ACHAT\n`;
+      t += `     c. Attendre la résolution du marché\n`;
+      t += `   Sur signal HOLD:\n`;
+      t += `     - Ne rien faire, attendre la prochaine bougie de 15 min\n`;
     }
-    text += '\n';
+    t += '\n';
 
-    text += `### Backtest Results\n`;
-    text += `Net PnL: ${pnl.toFixed(2)} USDC | Win Rate: ${wr.toFixed(1)}% | Sharpe: ${sharpe.toFixed(2)} | Sortino: ${sortino.toFixed(2)}\n`;
-    text += `Max Drawdown: ${dd.toFixed(1)}% | Total Trades: ${row.total_trades} | Annualized Return: ${annRet.toFixed(1)}%\n`;
-    if (conf > 0) text += `Strategy Confidence (quartile analysis): ${conf.toFixed(0)}%\n`;
+    t += `5. GESTION DES FRAIS POLYMARKET\n`;
+    t += `   - Formule: fee = C × feeRate × (p × (1-p))^exponent\n`;
+    t += `   - feeRate = 0.25, exponent = 2 (défaut Polymarket)\n`;
+    t += `   - Les frais sont maximaux quand p ≈ 0.50 et diminuent vers les extrêmes\n`;
+    t += `   - Estimer p dynamiquement via le changement de prix vs baseline\n`;
+    t += `   - Intégrer les frais dans le calcul de rentabilité avant chaque trade\n\n`;
 
-    return text;
+    t += `6. GESTION DU RISQUE\n`;
+    t += `   - Max drawdown observé en backtest: ${dd.toFixed(1)}%\n`;
+    t += `   - Max pertes consécutives observées: ${maxLoss}\n`;
+    t += `   - Profit factor: ${pf.toFixed(2)} (ratio gains/pertes)\n`;
+    t += `   - Stopper le bot si drawdown dépasse ${(dd * 1.5).toFixed(0)}% (1.5× le max historique)\n`;
+    t += `   - Stopper si ${Math.max(maxLoss + 3, 10)} pertes consécutives (marge au-dessus du backtest)\n\n`;
+
+    t += `7. BOUCLE PRINCIPALE DU BOT\n`;
+    t += `   while (running) {\n`;
+    t += `     1. Attendre la clôture de la bougie 15min courante\n`;
+    t += `     2. Récupérer la nouvelle bougie OHLCV\n`;
+    t += `     3. Mettre à jour les indicateurs techniques\n`;
+    t += `     4. Évaluer le signal (ACHAT / VENTE / HOLD)\n`;
+    t += `     5. Si signal != HOLD → exécuter le trade sur Polymarket\n`;
+    t += `     6. Logger le trade et le résultat\n`;
+    t += `     7. Vérifier les conditions de risk management\n`;
+    t += `   }\n\n`;
+
+    t += `=== RÉSULTATS DU BACKTEST ===\n`;
+    t += `Win Rate: ${wr.toFixed(1)}% | Net PnL: ${pnl.toFixed(2)} USDC | Sharpe: ${sharpe.toFixed(2)}\n`;
+    t += `Sortino: ${sortino.toFixed(2)} | Max Drawdown: ${dd.toFixed(1)}% | Trades: ${row.total_trades}\n`;
+    t += `Rendement annualisé: ${annRet.toFixed(1)}% | Profit Factor: ${pf.toFixed(2)}\n`;
+    if (conf > 0) t += `Confiance stratégie (analyse quartiles): ${conf.toFixed(0)}%\n`;
+
+    return t;
   }
 
-  function parseParams(jsonStr) {
-    try {
-      const obj = JSON.parse(jsonStr);
-      // Strategy params are wrapped: { "StrategyType": { ...params } }
-      const keys = Object.keys(obj);
-      if (keys.length === 1 && typeof obj[keys[0]] === 'object') {
-        return { type: keys[0], values: obj[keys[0]] };
-      }
-      return { type: '', values: obj };
-    } catch {
-      return { type: '', values: {} };
-    }
+  function getMaxPeriod(type, p) {
+    const vals = Object.values(p).filter(v => typeof v === 'number' && v > 0 && v < 1000);
+    return Math.max(50, ...vals) + 10;
+  }
+
+  function getDetailedIndicatorCalc(type, p) {
+    const calcs = {
+      rsi: () =>
+        `   a. Calculer le RSI sur les ${p.period} dernières bougies:\n` +
+        `      - Pour chaque bougie: gain = max(close - prev_close, 0), loss = max(prev_close - close, 0)\n` +
+        `      - avg_gain = SMA(gains, ${p.period}), avg_loss = SMA(losses, ${p.period})\n` +
+        `      - RS = avg_gain / avg_loss\n` +
+        `      - RSI = 100 - (100 / (1 + RS))\n`,
+      bollinger_bands: () =>
+        `   a. Calculer la SMA(close, ${p.period})\n` +
+        `   b. Calculer l'écart-type σ sur ${p.period} bougies\n` +
+        `   c. Bande haute = SMA + ${p.multiplier} × σ\n` +
+        `   d. Bande basse = SMA - ${p.multiplier} × σ\n`,
+      macd: () =>
+        `   a. EMA_fast = EMA(close, ${p.fast})\n` +
+        `   b. EMA_slow = EMA(close, ${p.slow})\n` +
+        `   c. MACD_line = EMA_fast - EMA_slow\n` +
+        `   d. Signal_line = EMA(MACD_line, ${p.signal})\n` +
+        `   e. Histogram = MACD_line - Signal_line\n`,
+      ema_crossover: () =>
+        `   a. EMA_fast = EMA(close, ${p.fast_period})\n` +
+        `   b. EMA_slow = EMA(close, ${p.slow_period})\n` +
+        `   c. Stocker la valeur précédente pour détecter les croisements\n`,
+      stochastic: () =>
+        `   a. Highest_high = max(high) sur ${p.period} bougies\n` +
+        `   b. Lowest_low = min(low) sur ${p.period} bougies\n` +
+        `   c. %K = 100 × (close - Lowest_low) / (Highest_high - Lowest_low)\n` +
+        `   d. %D = SMA(%K, 3)\n`,
+      atr_mean_reversion: () =>
+        `   a. TR = max(high-low, |high-prev_close|, |low-prev_close|)\n` +
+        `   b. ATR = SMA(TR, ${p.atr_period})\n` +
+        `   c. SMA_price = SMA(close, ${p.sma_period})\n` +
+        `   d. Upper = SMA_price + ${p.multiplier} × ATR\n` +
+        `   e. Lower = SMA_price - ${p.multiplier} × ATR\n`,
+      vwap: () =>
+        `   a. typical_price = (high + low + close) / 3\n` +
+        `   b. VWAP = Σ(typical_price × volume) / Σ(volume) sur ${p.period} bougies\n`,
+      obv: () =>
+        `   a. Si close > prev_close: OBV += volume\n` +
+        `   b. Si close < prev_close: OBV -= volume\n` +
+        `   c. OBV_SMA = SMA(OBV, ${p.sma_period})\n`,
+      williams_r: () =>
+        `   a. Highest_high = max(high) sur ${p.period} bougies\n` +
+        `   b. Lowest_low = min(low) sur ${p.period} bougies\n` +
+        `   c. %R = -100 × (Highest_high - close) / (Highest_high - Lowest_low)\n`,
+      adx: () =>
+        `   a. Calculer +DM et -DM (Directional Movement)\n` +
+        `   b. +DI = 100 × EMA(+DM, ${p.period}) / ATR\n` +
+        `   c. -DI = 100 × EMA(-DM, ${p.period}) / ATR\n` +
+        `   d. DX = 100 × |+DI - -DI| / (+DI + -DI)\n` +
+        `   e. ADX = EMA(DX, ${p.period})\n`,
+      gabagool: () =>
+        `   a. Pour chaque bougie 15min, calculer price_change = (close - open) / open\n` +
+        `   b. YES_price = 0.50 + clamp(price_change × 5, -0.40, 0.40)\n` +
+        `   c. NO_price = 1.00 - YES_price\n` +
+        `   d. spread = volatilité × ${p.spread_multiplier} (clampé entre 0.02 et 0.10)\n` +
+        `   e. YES_fill = mid_yes - spread/2 - ${p.bid_offset}\n` +
+        `   f. NO_fill = mid_no - spread/2 - ${p.bid_offset}\n` +
+        `   g. pair_cost = YES_fill + NO_fill\n`,
+    };
+
+    // For combos, concatenate sub-indicators
+    const combos = {
+      rsi_bollinger: () => `   [RSI]\n${calcs.rsi()}   [Bollinger Bands]\n${calcs.bollinger_bands()}`,
+      macd_rsi: () => `   [MACD — primaire]\n${calcs.macd()}   [RSI — filtre]\n` +
+        `   a. RSI = calcul standard sur ${p.rsi_period} bougies (seuils: ${p.rsi_os}/${p.rsi_ob})\n`,
+      ema_rsi: () => `   [EMA Crossover — primaire]\n${calcs.ema_crossover()}   [RSI — filtre]\n` +
+        `   a. RSI sur ${p.rsi_period} bougies (seuils: ${p.rsi_os}/${p.rsi_ob})\n`,
+      stoch_rsi: () => `   [Stochastic]\n${calcs.stochastic()}   [RSI]\n` +
+        `   a. RSI sur ${p.rsi_period} bougies (seuils: ${p.rsi_os}/${p.rsi_ob})\n`,
+      macd_bollinger: () => `   [MACD — primaire]\n${calcs.macd()}   [Bollinger — filtre]\n${calcs.bollinger_bands()}`,
+      triple_rsi_macd_bb: () => `   [RSI]\n   a. RSI(${p.rsi_period}), OS=${p.rsi_os}, OB=${p.rsi_ob}\n   [MACD]\n   a. MACD(${p.macd_fast}/${p.macd_slow}/${p.macd_signal})\n   [BB]\n   a. BB(${p.bb_period}, mult=${p.bb_mult})\n`,
+      triple_ema_rsi_stoch: () => `   [EMA]\n   a. EMA(${p.ema_fast}/${p.ema_slow})\n   [RSI]\n   a. RSI(${p.rsi_period}), OS=${p.rsi_os}, OB=${p.rsi_ob}\n   [Stoch]\n   a. Stoch(${p.stoch_period}), OS=${p.stoch_os}, OB=${p.stoch_ob}\n`,
+      vwap_rsi: () => `   [VWAP — primaire]\n${calcs.vwap()}   [RSI — filtre]\n   a. RSI(${p.rsi_period}), OS=${p.rsi_oversold}, OB=${p.rsi_overbought}\n`,
+      obv_macd: () => `   [MACD — primaire]\n${calcs.macd()}   [OBV — volume]\n${calcs.obv()}`,
+      adx_ema: () => `   [EMA Crossover — primaire]\n   a. EMA(${p.ema_fast}/${p.ema_slow})\n   [ADX — filtre]\n   a. ADX(${p.adx_period}), seuil=${p.adx_threshold}\n`,
+      williams_r_stoch: () => `   [Williams %R]\n   a. %R(${p.wr_period}), OS=${p.wr_oversold}, OB=${p.wr_overbought}\n   [Stochastic]\n   a. Stoch(${p.stoch_period}), OS=${p.stoch_oversold}, OB=${p.stoch_overbought}\n`,
+    };
+
+    const fn = combos[type] || calcs[type] || (() => '   Indicateur inconnu\n');
+    return fn();
+  }
+
+  function getDetailedSignalLogic(type, p, sym) {
+    const logics = {
+      rsi: () =>
+        `   SI RSI < ${p.oversold} → ACHAT (buy YES "${sym} up")\n` +
+        `   SI RSI > ${p.overbought} → VENTE (buy NO "${sym} up")\n` +
+        `   SINON → HOLD (ne rien faire)\n`,
+      bollinger_bands: () =>
+        `   SI close < bande_basse → ACHAT (buy YES)\n` +
+        `   SI close > bande_haute → VENTE (buy NO)\n` +
+        `   SINON → HOLD\n`,
+      macd: () =>
+        `   SI histogram passe de négatif à positif → ACHAT (buy YES)\n` +
+        `   SI histogram passe de positif à négatif → VENTE (buy NO)\n` +
+        `   SINON → HOLD\n`,
+      ema_crossover: () =>
+        `   SI EMA_fast croise au-dessus de EMA_slow (golden cross) → ACHAT\n` +
+        `   SI EMA_fast croise en-dessous de EMA_slow (death cross) → VENTE\n` +
+        `   SINON → HOLD\n`,
+      stochastic: () =>
+        `   SI %K croise %D vers le haut ET %K < ${p.oversold} → ACHAT\n` +
+        `   SI %K croise %D vers le bas ET %K > ${p.overbought} → VENTE\n` +
+        `   SINON → HOLD\n`,
+      atr_mean_reversion: () =>
+        `   SI close < SMA - ${p.multiplier} × ATR → ACHAT (prix très bas)\n` +
+        `   SI close > SMA + ${p.multiplier} × ATR → VENTE (prix très haut)\n` +
+        `   SINON → HOLD\n`,
+      vwap: () =>
+        `   SI close < VWAP → ACHAT (sous-évalué)\n` +
+        `   SI close > VWAP → VENTE (surévalué)\n` +
+        `   SINON → HOLD\n`,
+      obv: () =>
+        `   SI OBV > OBV_SMA → ACHAT (volume haussier)\n` +
+        `   SI OBV < OBV_SMA → VENTE (volume baissier)\n` +
+        `   SINON → HOLD\n`,
+      williams_r: () =>
+        `   SI %R < ${p.oversold} → ACHAT (survente extrême)\n` +
+        `   SI %R > ${p.overbought} → VENTE (surachat extrême)\n` +
+        `   SINON → HOLD\n`,
+      adx: () =>
+        `   SI ADX > ${p.adx_threshold} ET +DI > -DI → ACHAT (tendance haussière forte)\n` +
+        `   SI ADX > ${p.adx_threshold} ET -DI > +DI → VENTE (tendance baissière forte)\n` +
+        `   SI ADX < ${p.adx_threshold} → HOLD (pas de tendance)\n`,
+      rsi_bollinger: () =>
+        `   SI RSI < ${p.rsi_os} ET close < bande_basse → ACHAT (double confirmation survente)\n` +
+        `   SI RSI > ${p.rsi_ob} ET close > bande_haute → VENTE (double confirmation surachat)\n` +
+        `   SINON → HOLD (les deux indicateurs doivent être d'accord)\n`,
+      macd_rsi: () =>
+        `   SI MACD histogram cross up ET RSI < ${p.rsi_ob} → ACHAT\n` +
+        `   SI MACD histogram cross down ET RSI > ${p.rsi_os} → VENTE\n` +
+        `   SINON → HOLD (MACD sans signal ou RSI bloque)\n`,
+      ema_rsi: () =>
+        `   SI golden cross EMA ET RSI < ${p.rsi_ob} → ACHAT\n` +
+        `   SI death cross EMA ET RSI > ${p.rsi_os} → VENTE\n` +
+        `   SINON → HOLD\n`,
+      stoch_rsi: () =>
+        `   SI Stoch cross up en zone < ${p.stoch_os} ET RSI < ${p.rsi_os} → ACHAT\n` +
+        `   SI Stoch cross down en zone > ${p.stoch_ob} ET RSI > ${p.rsi_ob} → VENTE\n` +
+        `   SINON → HOLD\n`,
+      macd_bollinger: () =>
+        `   SI MACD cross up ET close près de bande basse → ACHAT\n` +
+        `   SI MACD cross down ET close près de bande haute → VENTE\n` +
+        `   SINON → HOLD\n`,
+      triple_rsi_macd_bb: () =>
+        `   Compter les votes: RSI signal + MACD signal + BB signal\n` +
+        `   SI >= 2 signaux ACHAT → ACHAT (majorité)\n` +
+        `   SI >= 2 signaux VENTE → VENTE (majorité)\n` +
+        `   SINON → HOLD (pas de consensus)\n`,
+      triple_ema_rsi_stoch: () =>
+        `   Compter les votes: EMA signal + RSI signal + Stoch signal\n` +
+        `   SI >= 2 signaux ACHAT → ACHAT (majorité)\n` +
+        `   SI >= 2 signaux VENTE → VENTE (majorité)\n` +
+        `   SINON → HOLD\n`,
+      vwap_rsi: () =>
+        `   SI close < VWAP ET RSI < ${p.rsi_overbought} → ACHAT\n` +
+        `   SI close > VWAP ET RSI > ${p.rsi_oversold} → VENTE\n` +
+        `   SINON → HOLD\n`,
+      obv_macd: () =>
+        `   SI MACD cross up ET OBV > OBV_SMA → ACHAT (momentum + volume)\n` +
+        `   SI MACD cross down ET OBV < OBV_SMA → VENTE\n` +
+        `   SINON → HOLD\n`,
+      adx_ema: () =>
+        `   SI golden cross EMA ET ADX > ${p.adx_threshold} → ACHAT\n` +
+        `   SI death cross EMA ET ADX > ${p.adx_threshold} → VENTE\n` +
+        `   SI ADX < ${p.adx_threshold} → HOLD (tendance trop faible)\n`,
+      williams_r_stoch: () =>
+        `   SI %R < ${p.wr_oversold} ET Stoch cross up < ${p.stoch_oversold} → ACHAT\n` +
+        `   SI %R > ${p.wr_overbought} ET Stoch cross down > ${p.stoch_overbought} → VENTE\n` +
+        `   SINON → HOLD\n`,
+      gabagool: () =>
+        `   SI pair_cost < ${p.max_pair_cost} → TRADE (acheter YES + NO)\n` +
+        `   SI pair_cost >= ${p.max_pair_cost} → SKIP (pas d'arbitrage)\n`,
+    };
+    return (logics[type] || (() => '   Logique inconnue\n'))();
   }
 
   function getStrategyColor(name) {
@@ -236,19 +511,23 @@
     return 'text-cyan-400';
   }
 
-  // ============================================================================
-  // Load on mount
-  // ============================================================================
+  function getRankStyle(rank) {
+    if (rank === 1) return { medal: '#FFD700', label: '1er' };
+    if (rank === 2) return { medal: '#C0C0C0', label: '2e' };
+    if (rank === 3) return { medal: '#CD7F32', label: '3e' };
+    return null;
+  }
+
   loadStrategies();
 </script>
 
-<div class="space-y-6">
+<div class="space-y-8">
   <!-- Header -->
   <div class="flex items-center gap-3">
     <BookOpen size={28} class="text-violet-400" />
     <div>
       <h2 class="text-2xl font-bold text-white">Strategy Playbook</h2>
-      <p class="text-sm text-gray-400">Top 10 strategies by Net PnL — AI-readable descriptions for Polymarket execution</p>
+      <p class="text-sm text-gray-400">Top 3 stratégies par win rate — guide d'implémentation bot Polymarket</p>
     </div>
     {#if $discoveryStatus.running}
       <div class="ml-auto flex items-center gap-2 px-3 py-1 bg-cyan-900/40 border border-cyan-700/50 rounded-full">
@@ -265,98 +544,91 @@
   {:else if strategies.length === 0}
     <div class="text-center text-gray-500 py-12">
       <BookOpen class="w-12 h-12 mx-auto mb-3 opacity-50" />
-      <p>No strategies in the knowledge base yet.</p>
-      <p class="text-sm mt-1">Run a Discovery Agent scan to populate it.</p>
+      <p>Aucune stratégie dans la knowledge base.</p>
+      <p class="text-sm mt-1">Lancez un Discovery Agent scan pour la remplir.</p>
     </div>
   {:else}
     {#each strategies as row, i}
+      {@const rank = i + 1}
+      {@const style = getRankStyle(rank)}
       {@const pnl = parseFloat(row.net_pnl)}
       {@const wr = parseFloat(row.win_rate)}
       {@const confVal = parseFloat(row.strategy_confidence || 0)}
-      {@const parsed = parseParams(row.strategy_params)}
-      {@const description = generateFullDescription(row)}
-      <div class="bg-gray-800 rounded-lg border border-gray-700 overflow-hidden">
-        <!-- Strategy Header -->
-        <div class="flex items-center gap-4 px-5 py-4 border-b border-gray-700 bg-gray-800/80">
-          <span class="text-2xl font-black text-violet-400">#{i + 1}</span>
-          <div class="flex-1">
-            <div class="text-lg font-bold {getStrategyColor(row.strategy_name)}">{row.strategy_name}</div>
-            <div class="text-xs text-gray-400">{row.symbol} · {row.days} days · {row.sizing_mode}</div>
+      {@const polyParams = getPolymarketParams(row)}
+      {@const botDesc = generateBotDescription(row)}
+      <div class="bg-gray-800 rounded-xl border border-gray-700 overflow-hidden">
+        <!-- Strategy Header with medal -->
+        <div class="flex items-center gap-4 px-6 py-5 border-b border-gray-700" style="background: linear-gradient(90deg, rgba(139,92,246,0.1), transparent)">
+          <div class="text-center">
+            <span class="text-3xl font-black" style="color: {style.medal}">{style.label}</span>
           </div>
-          <div class="flex gap-4 text-right">
-            <div>
-              <div class="text-xs text-gray-500">Net PnL</div>
-              <div class="text-lg font-bold font-mono {pnl >= 0 ? 'text-green-400' : 'text-red-400'}">{pnl >= 0 ? '+' : ''}{pnl.toFixed(2)}</div>
-            </div>
+          <div class="flex-1">
+            <div class="text-xl font-bold {getStrategyColor(row.strategy_name)}">{row.strategy_name}</div>
+            <div class="text-sm text-gray-400">{row.symbol} · {row.days} jours · sizing: {row.sizing_mode}</div>
+          </div>
+          <div class="flex gap-6 text-right">
             <div>
               <div class="text-xs text-gray-500">Win Rate</div>
-              <div class="text-lg font-bold font-mono {wr >= 60 ? 'text-yellow-400' : 'text-gray-300'}">{wr.toFixed(1)}%</div>
+              <div class="text-2xl font-black font-mono text-yellow-400">{wr.toFixed(1)}%</div>
+            </div>
+            <div>
+              <div class="text-xs text-gray-500">Net PnL</div>
+              <div class="text-xl font-bold font-mono {pnl >= 0 ? 'text-green-400' : 'text-red-400'}">{pnl >= 0 ? '+' : ''}{pnl.toFixed(2)}</div>
             </div>
             <div>
               <div class="text-xs text-gray-500">Sharpe</div>
-              <div class="text-lg font-bold font-mono text-gray-300">{parseFloat(row.sharpe_ratio).toFixed(2)}</div>
+              <div class="text-xl font-bold font-mono text-gray-300">{parseFloat(row.sharpe_ratio).toFixed(2)}</div>
             </div>
             {#if confVal > 0}
               <div>
-                <div class="text-xs text-gray-500">Confidence</div>
-                <div class="text-lg font-bold font-mono {confVal >= 70 ? 'text-green-400' : confVal >= 40 ? 'text-yellow-400' : 'text-red-400'}">{confVal.toFixed(0)}%</div>
+                <div class="text-xs text-gray-500">Confiance</div>
+                <div class="text-xl font-bold font-mono {confVal >= 70 ? 'text-green-400' : confVal >= 40 ? 'text-yellow-400' : 'text-red-400'}">{confVal.toFixed(0)}%</div>
               </div>
             {/if}
           </div>
         </div>
 
-        <div class="grid grid-cols-1 lg:grid-cols-2 gap-0">
-          <!-- Parameters Table -->
-          <div class="p-5 border-b lg:border-b-0 lg:border-r border-gray-700">
-            <h4 class="text-xs text-gray-400 uppercase tracking-wider mb-3">Parameters</h4>
+        <!-- Polymarket Parameters Table -->
+        <div class="px-6 py-4 border-b border-gray-700">
+          <h4 class="text-sm font-semibold text-violet-400 uppercase tracking-wider mb-3">Paramètres essentiels Polymarket</h4>
+          <div class="overflow-x-auto">
             <table class="w-full text-sm">
               <thead>
-                <tr class="text-gray-500 text-xs">
-                  <th class="text-left pb-1">Parameter</th>
-                  <th class="text-right pb-1">Value</th>
-                  <th class="text-left pb-1 pl-3">Description</th>
+                <tr class="text-gray-500 text-xs uppercase">
+                  <th class="text-left pb-2 pr-4">Paramètre</th>
+                  <th class="text-left pb-2 pr-4">Valeur</th>
+                  <th class="text-left pb-2">Description</th>
                 </tr>
               </thead>
               <tbody>
-                {#each Object.entries(parsed.values) as [key, val]}
-                  <tr class="border-t border-gray-700/50">
-                    <td class="py-1.5 font-mono text-violet-300 text-xs">{key}</td>
-                    <td class="py-1.5 text-right font-mono text-white">{val}</td>
-                    <td class="py-1.5 pl-3 text-xs text-gray-500">{paramDescriptions[key] || ''}</td>
+                {#each polyParams as item}
+                  <tr class="border-t border-gray-700/40">
+                    <td class="py-2 pr-4 font-medium {item.param.startsWith('→') ? 'text-yellow-400' : 'text-gray-300'} whitespace-nowrap">{item.param}</td>
+                    <td class="py-2 pr-4 font-mono text-white whitespace-nowrap">{item.value}</td>
+                    <td class="py-2 text-xs text-gray-500">{item.desc}</td>
                   </tr>
                 {/each}
               </tbody>
             </table>
-
-            <!-- Extra metrics -->
-            <h4 class="text-xs text-gray-400 uppercase tracking-wider mt-4 mb-2">Performance Metrics</h4>
-            <div class="grid grid-cols-2 gap-2 text-xs">
-              <div class="flex justify-between"><span class="text-gray-500">Sortino</span><span class="font-mono text-gray-300">{parseFloat(row.sortino_ratio || 0).toFixed(2)}</span></div>
-              <div class="flex justify-between"><span class="text-gray-500">Max Drawdown</span><span class="font-mono text-red-400">{parseFloat(row.max_drawdown_pct).toFixed(1)}%</span></div>
-              <div class="flex justify-between"><span class="text-gray-500">Ann. Return</span><span class="font-mono {parseFloat(row.annualized_return_pct || 0) >= 0 ? 'text-green-400' : 'text-red-400'}">{parseFloat(row.annualized_return_pct || 0).toFixed(1)}%</span></div>
-              <div class="flex justify-between"><span class="text-gray-500">Total Trades</span><span class="font-mono text-gray-300">{row.total_trades}</span></div>
-              <div class="flex justify-between"><span class="text-gray-500">Profit Factor</span><span class="font-mono text-gray-300">{parseFloat(row.profit_factor).toFixed(2)}</span></div>
-              <div class="flex justify-between"><span class="text-gray-500">Avg Trade PnL</span><span class="font-mono {parseFloat(row.avg_trade_pnl) >= 0 ? 'text-green-400' : 'text-red-400'}">{parseFloat(row.avg_trade_pnl).toFixed(4)}</span></div>
-            </div>
           </div>
+        </div>
 
-          <!-- AI Description -->
-          <div class="p-5 relative">
-            <div class="flex items-center justify-between mb-3">
-              <h4 class="text-xs text-gray-400 uppercase tracking-wider">AI-Readable Strategy Description</h4>
-              <button
-                onclick={() => copyDescription(description, i)}
-                class="flex items-center gap-1 px-2 py-1 rounded text-xs {copiedIdx === i ? 'bg-green-600 text-white' : 'bg-gray-700 text-gray-400 hover:bg-gray-600 hover:text-white'} transition-colors"
-              >
-                {#if copiedIdx === i}
-                  <Check size={12} /> Copied
-                {:else}
-                  <Copy size={12} /> Copy
-                {/if}
-              </button>
-            </div>
-            <pre class="text-xs text-gray-300 whitespace-pre-wrap font-mono bg-gray-900/50 rounded-lg p-4 max-h-80 overflow-y-auto leading-relaxed">{description}</pre>
+        <!-- Bot Implementation Description -->
+        <div class="px-6 py-4">
+          <div class="flex items-center justify-between mb-3">
+            <h4 class="text-sm font-semibold text-violet-400 uppercase tracking-wider">Guide d'implémentation bot</h4>
+            <button
+              onclick={() => copyDescription(botDesc, i)}
+              class="flex items-center gap-1.5 px-3 py-1.5 rounded text-xs {copiedIdx === i ? 'bg-green-600 text-white' : 'bg-gray-700 text-gray-400 hover:bg-gray-600 hover:text-white'} transition-colors"
+            >
+              {#if copiedIdx === i}
+                <Check size={14} /> Copié !
+              {:else}
+                <Copy size={14} /> Copier la description
+              {/if}
+            </button>
           </div>
+          <pre class="text-xs text-gray-300 whitespace-pre-wrap font-mono bg-gray-900/60 rounded-lg p-5 max-h-96 overflow-y-auto leading-relaxed border border-gray-700/50">{botDesc}</pre>
         </div>
       </div>
     {/each}
