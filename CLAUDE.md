@@ -37,7 +37,7 @@ Le dossier `docs/` contient la documentation essentielle du projet. **Consulter 
 ```bash
 cargo build                          # Debug build
 cargo build --release                # Release build
-cargo test --all                     # Run all workspace tests (48 tests)
+cargo test --all                     # Run all workspace tests (53 tests)
 cargo test -p engine                 # Tests for engine crate only
 cargo run -- serve --port 3001       # Start web server
 cargo run -- run --symbols BTCUSDT   # Run discovery headless (CLI mode, default 365 days)
@@ -130,7 +130,7 @@ Le statut discovery est géré au niveau **App.svelte** (pas dans Discovery.svel
 | 9 | Williams %R | period, overbought, oversold | Buy < oversold (-80), Sell > overbought (-20) |
 | 10 | ADX | period, adx_threshold | Buy when +DI > -DI (if ADX strong), Sell inverse |
 
-### Combo Strategies (11)
+### Legacy Combo Strategies (11) — still in DB, no longer explored
 
 | # | Strategy | Mode | Components |
 |---|----------|------|------------|
@@ -145,6 +145,37 @@ Le statut discovery est géré au niveau **App.svelte** (pas dans Discovery.svel
 | 9 | OBV+MACD | PrimaryConfirmed | MACD primary, OBV confirms volume |
 | 10 | ADX+EMA | PrimaryConfirmed | EMA primary, ADX filters weak trends |
 | 11 | Williams%R+Stoch | Unanimous | Double confirmation oversold/overbought |
+
+### Dynamic Combo System (NEW — active discovery)
+
+Le système explore dynamiquement **toutes les combinaisons** possibles des 10 indicateurs :
+
+| Type | Count | Description |
+|------|-------|-------------|
+| Paires | C(10,2) × 3 modes × 3 params = 405 | Toutes les paires de 2 indicateurs |
+| Triples | C(10,3) × 3 modes × 3 params = 1080 | Toutes les triples de 3 indicateurs |
+| Quadruples | C(10,4) × 1 mode × 1 param = 210 | Tous les quads (Majority, default) |
+| **Total Cycle 0** | **~1743** | + 48 Gabagool |
+
+**Types (`discovery.rs`) :**
+- `SingleIndicatorType` — enum des 10 indicateurs (RSI, BB, MACD, EMA, Stoch, ATR, VWAP, OBV, WR, ADX)
+- `IndicatorParams` — paramètres spécifiques par indicateur (tagged enum)
+- `DynCombineMode` — Unanimous / Majority / PrimaryConfirmed
+- `DiscoveryStrategyType::DynamicCombo { indicators, params, combine_mode }`
+
+**Nommage :** `"RSI+MACD(M)"`, `"BB+Stoch+ADX(U)"`, `"RSI+EMA+VWAP+OBV(PC)"`
+
+**3 variantes de paramètres par indicateur :**
+- `default_params()` — standard textbook values
+- `aggressive_params()` — short periods, tight thresholds
+- `conservative_params()` — long periods, wide thresholds
+- `random_params_for(rng)` — fully random within valid ranges
+
+**Cycles :**
+- Cycle 0 : toutes les paires/triples (3 variants × 3 modes) + quads (default × Majority) + Gabagool
+- Cycle 1 : quads avec Unanimous + PrimaryConfirmed + aggressive params
+- Cycle 2 : mixed params (aggressive A + conservative B) + random combos
+- Cycle 3+ : ML-guided evolutionary (60% mutation, 20% crossover, 20% random)
 
 ### Arbitrage (1)
 
@@ -165,18 +196,18 @@ Le système utilise une estimation dynamique de probabilité basée sur le chang
 
 **SignalGenerator trait** — All indicators implement `on_bar(&mut self, kline: &Kline) -> SignalWithConfidence`. Combo strategies compose multiple generators internally via `ComboSignalGenerator` with three combine modes: `Unanimous`, `Majority`, `PrimaryConfirmed`.
 
-**Continuous Discovery with ML-Guided Exploration** — Le discovery fonctionne en mode continu infini :
-- **Cycle 0** : Phase 1 broad scan (~800+ combos × symboles)
-- **Cycle 1** : Fine interpolation (valeurs intermédiaires entre les points de la grille)
-- **Cycle 2** : Extended ranges (paramètres plus larges)
+**Continuous Discovery with Dynamic Combos** — Le discovery explore dynamiquement toutes les combinaisons d'indicateurs :
+- **Cycle 0** : ~1743 DynamicCombo (paires × 3 params × 3 modes + triples + quads) + 48 Gabagool + Phase 2 refinement des top 20
+- **Cycle 1** : Quads avec modes Unanimous/PrimaryConfirmed + aggressive params (~648)
+- **Cycle 2** : Mixed param variants (aggressive A + conservative B) + 200 random combos
 - **Cycle 3+** : **ML-Guided Exploration** (algorithme évolutionnaire) :
-  - **60% exploitation** : mutations (±15%) autour des 30 meilleurs résultats
-  - **20% crossover** : mélange de paramètres entre paires de bons résultats du même type
-  - **20% exploration** : combinaisons purement aléatoires pour éviter les optima locaux
+  - **60% exploitation** : mutations (±15%) autour des 30 meilleurs résultats (avec `perturb_indicator_params()`)
+  - **20% crossover** : mélange de paramètres entre paires de DynamicCombo du même set d'indicateurs
+  - **20% exploration** : DynamicCombo aléatoires (2-4 indicateurs) pour éviter les optima locaux
   - Budget croissant : `300 + cycle × 50` (max 1000)
-- Cycle 0 inclut aussi une Phase 2 de refinement des top 20
 - Les résultats sont persistés en DB (SQLite) avec déduplication par hash SHA256
 - Re-fetch des klines toutes les 6h
+- Les anciens backtests (legacy singles/combos) restent en DB, visibles mais non ré-explorés
 
 **Composite Scoring** — Results are ranked by a composite metric combining net PnL, win rate, Sharpe ratio, max drawdown, profit factor, strategy confidence (0-300 bonus), Sortino ratio (0-250 bonus), and consecutive loss penalty (-50/-100).
 
@@ -246,18 +277,19 @@ Le système utilise une estimation dynamique de probabilité basée sur le chang
 
 Unit tests exist in:
 - `crates/engine/src/fees.rs` — 7 tests covering edge cases, symmetry, precision
-- `crates/engine/src/discovery.rs` — 15 tests for grid sizes, strategy types, scoring, progress, ML-guided exploration
+- `crates/engine/src/discovery.rs` — 20 tests for grid sizes, strategy types, scoring, progress, ML-guided exploration, DynamicCombo naming/mutation/crossover/random
 - `crates/engine/src/indicators.rs` — 5 tests for signal generation, combos, clamping, reset
 - `crates/engine/src/optimizer.rs` — 8 tests for grid generation, scoring
 - `crates/engine/src/gabagool.rs` — 7 tests for arbitrage engine
 - `crates/engine/src/engine.rs` — 2 tests for backtest engine
 
 ```bash
-cargo test --all                     # Run all 48 tests
+cargo test --all                     # Run all 53 tests
 cargo test -p engine -- fees         # Run fee-specific tests
 cargo test -p engine -- discovery    # Run discovery tests
 cargo test -p engine -- indicators   # Run indicator tests
 cargo test -p engine -- ml_guided    # Run ML-guided exploration tests
+cargo test -p engine -- dynamic_combo # Run DynamicCombo tests
 ```
 
 ## Déploiement AWS
@@ -327,6 +359,50 @@ Ports à ouvrir dans le Security Group EC2 :
 | 4000 | poly-discover |
 
 ## Historique des changements récents
+
+### Dynamic Combo Discovery — Exploration de combinaisons d'indicateurs 2/3/4 (2026-02-08)
+
+**Refonte majeure** du système de découverte : passage des stratégies hardcodées (10 singles + 11 combos) à l'exploration dynamique de **toutes les combinaisons** possibles des 10 indicateurs techniques.
+
+**Nouveaux types (`crates/engine/src/discovery.rs`) :**
+- `SingleIndicatorType` enum (10 variants : Rsi, BollingerBands, Macd, EmaCrossover, Stochastic, AtrMeanReversion, Vwap, Obv, WilliamsR, Adx)
+- `IndicatorParams` enum (10 variants avec params spécifiques par indicateur)
+- `DynCombineMode` enum (Unanimous, Majority, PrimaryConfirmed)
+- `DiscoveryStrategyType::DynamicCombo { indicators, params, combine_mode }` — nouveau variant
+- Méthodes : `default_params()`, `aggressive_params()`, `conservative_params()`, `random_params_for(rng)` sur `SingleIndicatorType`
+- Nommage dynamique : `"RSI+MACD(M)"`, `"BB+Stoch+ADX(U)"`, etc.
+
+**Grid generation réécrite :**
+- `generate_phase1_grid()` : ~1743 DynamicCombo (405 paires + 1080 triples + 210 quads) + 48 Gabagool
+- `generate_exploratory_grid()` : Cycle 1 = quads complets, Cycle 2 = mixed params + random, Cycle 3+ = random combos
+- `generate_random_strategies()` : ne génère que des DynamicCombo (95%) + Gabagool (5%)
+- `generate_random_dynamic_combo(n, rng)` : helper pour créer un combo aléatoire de taille n
+
+**ML-Guided adapté :**
+- `mutate_strategy()` : nouveau match arm DynamicCombo avec `perturb_indicator_params()`
+- `crossover_strategies()` : crossover entre DynamicCombo du même set d'indicateurs
+- `generate_refinement_grid()` : essaie les 2 autres modes + mute chaque indicateur
+
+**Signal generator factory (`crates/engine/src/indicators.rs`) :**
+- `build_single_generator(ind, params)` : nouvelle fonction qui construit un generator depuis `SingleIndicatorType` + `IndicatorParams`
+- `build_signal_generator()` : nouveau match arm `DynamicCombo` → `ComboSignalGenerator::new()`
+
+**Rétrocompatibilité :**
+- Les anciens records en DB restent intacts (champ `strategy_type` = `"rsi"`, `"macd_rsi"`, etc.)
+- Les nouveaux records utilisent `strategy_type = "dynamic_combo"` et `strategy_params` contient le JSON complet
+- Les legacy single/combo variants sont toujours dans l'enum pour la dé-sérialisation
+
+**Frontend (`src/pages/KnowledgeBase.svelte`) :**
+- Ajout filtre `<option value="dynamic_combo">Dynamic Combos</option>` dans le dropdown stratégie
+
+**Tests (53 total, +5 nouveaux) :**
+- `test_dynamic_combo_naming` : vérifie le format `"RSI+MACD(M)"` / `"BB+Stoch+ADX(U)"`
+- `test_dynamic_combo_backtest_runs` : exécute un backtest complet sur un DynamicCombo
+- `test_dynamic_combo_mutation` : vérifie que la mutation produit un DynamicCombo valide
+- `test_dynamic_combo_crossover` : vérifie le crossover entre DynamicCombo du même type
+- `test_random_dynamic_combo_generation` : vérifie taille, pas de doublons d'indicateurs
+
+---
 
 ### Page Playbook — Refonte : Top 3 par Win Rate + Guide Bot Polymarket (2026-02-08)
 

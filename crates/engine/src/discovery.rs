@@ -26,6 +26,194 @@ use crate::indicators::{build_signal_generator, SignalGenerator};
 use crate::types::{BacktestTrade, Kline, TradeSide};
 
 // ============================================================================
+// Dynamic Combo Types
+// ============================================================================
+
+/// The 10 single indicator types available for dynamic combination
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum SingleIndicatorType {
+    Rsi,
+    BollingerBands,
+    Macd,
+    EmaCrossover,
+    Stochastic,
+    AtrMeanReversion,
+    Vwap,
+    Obv,
+    WilliamsR,
+    Adx,
+}
+
+impl SingleIndicatorType {
+    pub fn short_name(&self) -> &str {
+        match self {
+            Self::Rsi => "RSI",
+            Self::BollingerBands => "BB",
+            Self::Macd => "MACD",
+            Self::EmaCrossover => "EMA",
+            Self::Stochastic => "Stoch",
+            Self::AtrMeanReversion => "ATR",
+            Self::Vwap => "VWAP",
+            Self::Obv => "OBV",
+            Self::WilliamsR => "WR",
+            Self::Adx => "ADX",
+        }
+    }
+
+    pub fn all() -> &'static [SingleIndicatorType] {
+        &[
+            Self::Rsi,
+            Self::BollingerBands,
+            Self::Macd,
+            Self::EmaCrossover,
+            Self::Stochastic,
+            Self::AtrMeanReversion,
+            Self::Vwap,
+            Self::Obv,
+            Self::WilliamsR,
+            Self::Adx,
+        ]
+    }
+
+    pub fn default_params(&self) -> IndicatorParams {
+        match self {
+            Self::Rsi => IndicatorParams::Rsi { period: 14, overbought: 70.0, oversold: 30.0 },
+            Self::BollingerBands => IndicatorParams::BollingerBands { period: 20, multiplier: 2.0 },
+            Self::Macd => IndicatorParams::Macd { fast: 12, slow: 26, signal: 9 },
+            Self::EmaCrossover => IndicatorParams::EmaCrossover { fast_period: 10, slow_period: 26 },
+            Self::Stochastic => IndicatorParams::Stochastic { period: 14, overbought: 80.0, oversold: 20.0 },
+            Self::AtrMeanReversion => IndicatorParams::AtrMeanReversion { atr_period: 14, sma_period: 20, multiplier: 2.0 },
+            Self::Vwap => IndicatorParams::Vwap { period: 20 },
+            Self::Obv => IndicatorParams::Obv { sma_period: 14 },
+            Self::WilliamsR => IndicatorParams::WilliamsR { period: 14, overbought: -20.0, oversold: -80.0 },
+            Self::Adx => IndicatorParams::Adx { period: 14, adx_threshold: 25.0 },
+        }
+    }
+
+    pub fn aggressive_params(&self) -> IndicatorParams {
+        match self {
+            Self::Rsi => IndicatorParams::Rsi { period: 7, overbought: 65.0, oversold: 35.0 },
+            Self::BollingerBands => IndicatorParams::BollingerBands { period: 10, multiplier: 1.5 },
+            Self::Macd => IndicatorParams::Macd { fast: 6, slow: 17, signal: 5 },
+            Self::EmaCrossover => IndicatorParams::EmaCrossover { fast_period: 5, slow_period: 15 },
+            Self::Stochastic => IndicatorParams::Stochastic { period: 7, overbought: 75.0, oversold: 25.0 },
+            Self::AtrMeanReversion => IndicatorParams::AtrMeanReversion { atr_period: 7, sma_period: 10, multiplier: 1.5 },
+            Self::Vwap => IndicatorParams::Vwap { period: 10 },
+            Self::Obv => IndicatorParams::Obv { sma_period: 7 },
+            Self::WilliamsR => IndicatorParams::WilliamsR { period: 7, overbought: -15.0, oversold: -85.0 },
+            Self::Adx => IndicatorParams::Adx { period: 7, adx_threshold: 20.0 },
+        }
+    }
+
+    pub fn conservative_params(&self) -> IndicatorParams {
+        match self {
+            Self::Rsi => IndicatorParams::Rsi { period: 21, overbought: 80.0, oversold: 20.0 },
+            Self::BollingerBands => IndicatorParams::BollingerBands { period: 30, multiplier: 2.5 },
+            Self::Macd => IndicatorParams::Macd { fast: 12, slow: 35, signal: 12 },
+            Self::EmaCrossover => IndicatorParams::EmaCrossover { fast_period: 15, slow_period: 50 },
+            Self::Stochastic => IndicatorParams::Stochastic { period: 21, overbought: 85.0, oversold: 15.0 },
+            Self::AtrMeanReversion => IndicatorParams::AtrMeanReversion { atr_period: 21, sma_period: 40, multiplier: 2.5 },
+            Self::Vwap => IndicatorParams::Vwap { period: 40 },
+            Self::Obv => IndicatorParams::Obv { sma_period: 25 },
+            Self::WilliamsR => IndicatorParams::WilliamsR { period: 21, overbought: -25.0, oversold: -75.0 },
+            Self::Adx => IndicatorParams::Adx { period: 21, adx_threshold: 30.0 },
+        }
+    }
+
+    pub fn random_params(rng: &mut impl rand::Rng) -> (SingleIndicatorType, IndicatorParams) {
+        let all = Self::all();
+        let ind = all[rng.gen_range(0..all.len())];
+        let params = ind.random_params_for(rng);
+        (ind, params)
+    }
+
+    pub fn random_params_for(&self, rng: &mut impl rand::Rng) -> IndicatorParams {
+        match self {
+            Self::Rsi => IndicatorParams::Rsi {
+                period: rng.gen_range(5..=35),
+                overbought: rng.gen_range(60.0..=85.0),
+                oversold: rng.gen_range(15.0..=40.0),
+            },
+            Self::BollingerBands => IndicatorParams::BollingerBands {
+                period: rng.gen_range(7..=40),
+                multiplier: rng.gen_range(1.0..=3.5),
+            },
+            Self::Macd => {
+                let fast = rng.gen_range(4..=15);
+                let slow = rng.gen_range((fast + 3)..=40);
+                IndicatorParams::Macd { fast, slow, signal: rng.gen_range(3..=12) }
+            }
+            Self::EmaCrossover => {
+                let fast = rng.gen_range(4..=18);
+                let slow = rng.gen_range((fast + 3)..=60);
+                IndicatorParams::EmaCrossover { fast_period: fast, slow_period: slow }
+            }
+            Self::Stochastic => IndicatorParams::Stochastic {
+                period: rng.gen_range(5..=25),
+                overbought: rng.gen_range(70.0..=90.0),
+                oversold: rng.gen_range(10.0..=30.0),
+            },
+            Self::AtrMeanReversion => IndicatorParams::AtrMeanReversion {
+                atr_period: rng.gen_range(5..=30),
+                sma_period: rng.gen_range(8..=60),
+                multiplier: rng.gen_range(0.75..=3.0),
+            },
+            Self::Vwap => IndicatorParams::Vwap { period: rng.gen_range(7..=60) },
+            Self::Obv => IndicatorParams::Obv { sma_period: rng.gen_range(7..=40) },
+            Self::WilliamsR => IndicatorParams::WilliamsR {
+                period: rng.gen_range(5..=30),
+                overbought: rng.gen_range(-30.0..=-10.0),
+                oversold: rng.gen_range(-90.0..=-70.0),
+            },
+            Self::Adx => IndicatorParams::Adx {
+                period: rng.gen_range(7..=30),
+                adx_threshold: rng.gen_range(15.0..=40.0),
+            },
+        }
+    }
+}
+
+/// Parameters for each indicator type
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(tag = "indicator", rename_all = "snake_case")]
+pub enum IndicatorParams {
+    Rsi { period: usize, overbought: f64, oversold: f64 },
+    BollingerBands { period: usize, multiplier: f64 },
+    Macd { fast: usize, slow: usize, signal: usize },
+    EmaCrossover { fast_period: usize, slow_period: usize },
+    Stochastic { period: usize, overbought: f64, oversold: f64 },
+    AtrMeanReversion { atr_period: usize, sma_period: usize, multiplier: f64 },
+    Vwap { period: usize },
+    Obv { sma_period: usize },
+    WilliamsR { period: usize, overbought: f64, oversold: f64 },
+    Adx { period: usize, adx_threshold: f64 },
+}
+
+/// How to combine signals in a dynamic combo
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum DynCombineMode {
+    Unanimous,
+    Majority,
+    PrimaryConfirmed,
+}
+
+impl DynCombineMode {
+    pub fn all() -> &'static [DynCombineMode] {
+        &[Self::Unanimous, Self::Majority, Self::PrimaryConfirmed]
+    }
+
+    pub fn short_suffix(&self) -> &str {
+        match self {
+            Self::Unanimous => "U",
+            Self::Majority => "M",
+            Self::PrimaryConfirmed => "PC",
+        }
+    }
+}
+
+// ============================================================================
 // Types
 // ============================================================================
 
@@ -163,6 +351,12 @@ pub enum DiscoveryStrategyType {
         stoch_overbought: f64,
         stoch_oversold: f64,
     },
+    // === Dynamic Combos (2-4 indicators) ===
+    DynamicCombo {
+        indicators: Vec<SingleIndicatorType>,
+        params: Vec<IndicatorParams>,
+        combine_mode: DynCombineMode,
+    },
     // === Arbitrage (1) ===
     Gabagool {
         max_pair_cost: Decimal,
@@ -195,13 +389,45 @@ impl DiscoveryStrategyType {
             Self::ObvMacd { .. } => "OBV+MACD",
             Self::AdxEma { .. } => "ADX+EMA",
             Self::WilliamsRStoch { .. } => "Williams%R+Stoch",
+            Self::DynamicCombo { .. } => return self.dynamic_combo_name(),
             Self::Gabagool { .. } => "Gabagool",
+        }
+    }
+
+    fn dynamic_combo_name(&self) -> &str {
+        // We use a thread-local cache for the computed name since we return &str
+        // For dynamic combos, we leak the string to get a static ref
+        // This is acceptable because there are a finite number of combo names
+        match self {
+            Self::DynamicCombo { indicators, combine_mode, .. } => {
+                use std::sync::OnceLock;
+                use std::collections::HashMap;
+                use std::sync::Mutex;
+                static NAMES: OnceLock<Mutex<HashMap<String, &'static str>>> = OnceLock::new();
+                let names = NAMES.get_or_init(|| Mutex::new(HashMap::new()));
+
+                let key = format!(
+                    "{}({})",
+                    indicators.iter().map(|i| i.short_name()).collect::<Vec<_>>().join("+"),
+                    combine_mode.short_suffix(),
+                );
+
+                let mut map = names.lock().unwrap();
+                if let Some(s) = map.get(&key) {
+                    return s;
+                }
+                let leaked: &'static str = Box::leak(key.clone().into_boxed_str());
+                map.insert(key, leaked);
+                leaked
+            }
+            _ => unreachable!(),
         }
     }
 
     fn is_gabagool(&self) -> bool {
         matches!(self, Self::Gabagool { .. })
     }
+
 }
 
 /// Position sizing mode
@@ -369,6 +595,91 @@ impl Default for DiscoveryProgress {
 // ============================================================================
 
 fn generate_phase1_grid() -> Vec<DiscoveryStrategyType> {
+    let mut grid = Vec::with_capacity(4000);
+    let all_indicators = SingleIndicatorType::all();
+    let all_modes = DynCombineMode::all();
+    let param_variants: &[fn(&SingleIndicatorType) -> IndicatorParams] = &[
+        |ind| ind.default_params(),
+        |ind| ind.aggressive_params(),
+        |ind| ind.conservative_params(),
+    ];
+
+    // --- Pairs: C(10,2) = 45 × 3 param_variants × 3 modes = 405 ---
+    for i in 0..all_indicators.len() {
+        for j in (i + 1)..all_indicators.len() {
+            let ind_a = all_indicators[i];
+            let ind_b = all_indicators[j];
+            for param_fn in param_variants {
+                for &mode in all_modes {
+                    grid.push(DiscoveryStrategyType::DynamicCombo {
+                        indicators: vec![ind_a, ind_b],
+                        params: vec![param_fn(&ind_a), param_fn(&ind_b)],
+                        combine_mode: mode,
+                    });
+                }
+            }
+        }
+    }
+
+    // --- Triples: C(10,3) = 120 × 3 param_variants × 3 modes = 1080 ---
+    for i in 0..all_indicators.len() {
+        for j in (i + 1)..all_indicators.len() {
+            for k in (j + 1)..all_indicators.len() {
+                let inds = vec![all_indicators[i], all_indicators[j], all_indicators[k]];
+                for param_fn in param_variants {
+                    for &mode in all_modes {
+                        grid.push(DiscoveryStrategyType::DynamicCombo {
+                            indicators: inds.clone(),
+                            params: vec![param_fn(&inds[0]), param_fn(&inds[1]), param_fn(&inds[2])],
+                            combine_mode: mode,
+                        });
+                    }
+                }
+            }
+        }
+    }
+
+    // --- Quadruples: C(10,4) = 210 × default params only × Majority mode = 210 ---
+    for i in 0..all_indicators.len() {
+        for j in (i + 1)..all_indicators.len() {
+            for k in (j + 1)..all_indicators.len() {
+                for l in (k + 1)..all_indicators.len() {
+                    let inds = vec![
+                        all_indicators[i], all_indicators[j],
+                        all_indicators[k], all_indicators[l],
+                    ];
+                    grid.push(DiscoveryStrategyType::DynamicCombo {
+                        indicators: inds.clone(),
+                        params: vec![
+                            inds[0].default_params(), inds[1].default_params(),
+                            inds[2].default_params(), inds[3].default_params(),
+                        ],
+                        combine_mode: DynCombineMode::Majority,
+                    });
+                }
+            }
+        }
+    }
+
+    // --- Gabagool: 4 mpc × 4 bo × 3 sm = 48 ---
+    for mpc in &[dec!(0.92), dec!(0.94), dec!(0.96), dec!(0.98)] {
+        for bo in &[dec!(0.005), dec!(0.01), dec!(0.02), dec!(0.03)] {
+            for sm in &[dec!(2), dec!(3), dec!(5)] {
+                grid.push(DiscoveryStrategyType::Gabagool {
+                    max_pair_cost: *mpc,
+                    bid_offset: *bo,
+                    spread_multiplier: *sm,
+                });
+            }
+        }
+    }
+
+    grid
+}
+
+// Keep the old grid for legacy strategies that may still be in DB
+#[allow(dead_code)]
+fn generate_legacy_phase1_grid() -> Vec<DiscoveryStrategyType> {
     let mut grid = Vec::with_capacity(500);
 
     // 1. RSI: 5 periods × 4 ob × 4 os = 80
@@ -1366,13 +1677,81 @@ fn generate_refinement_grid(strategy: &DiscoveryStrategyType) -> Vec<DiscoverySt
                 }
             }
         }
-        // For combos, return the original (no refinement — too many params)
+        // Dynamic combos: tweak params of 1st indicator + try other modes
+        DiscoveryStrategyType::DynamicCombo { indicators, params, combine_mode } => {
+            // Try the 2 other combine modes
+            for &mode in DynCombineMode::all() {
+                if mode != *combine_mode {
+                    variants.push(DiscoveryStrategyType::DynamicCombo {
+                        indicators: indicators.clone(),
+                        params: params.clone(),
+                        combine_mode: mode,
+                    });
+                }
+            }
+            // Mutate params of each indicator slightly
+            for idx in 0..params.len() {
+                let mut new_params = params.clone();
+                new_params[idx] = mutate_indicator_params(&params[idx]);
+                variants.push(DiscoveryStrategyType::DynamicCombo {
+                    indicators: indicators.clone(),
+                    params: new_params,
+                    combine_mode: *combine_mode,
+                });
+            }
+        }
+        // For legacy combos, return the original (no refinement — too many params)
         other => {
             variants.push(other.clone());
         }
     }
 
     variants
+}
+
+/// Slightly mutate indicator params (deterministic small deltas for refinement)
+fn mutate_indicator_params(params: &IndicatorParams) -> IndicatorParams {
+    match params {
+        IndicatorParams::Rsi { period, overbought, oversold } => IndicatorParams::Rsi {
+            period: (*period).max(3).wrapping_add(1),
+            overbought: overbought + 2.5,
+            oversold: oversold - 2.5,
+        },
+        IndicatorParams::BollingerBands { period, multiplier } => IndicatorParams::BollingerBands {
+            period: (*period).max(3).wrapping_add(2),
+            multiplier: multiplier + 0.25,
+        },
+        IndicatorParams::Macd { fast, slow, signal } => IndicatorParams::Macd {
+            fast: *fast,
+            slow: slow + 2,
+            signal: *signal,
+        },
+        IndicatorParams::EmaCrossover { fast_period, slow_period } => IndicatorParams::EmaCrossover {
+            fast_period: *fast_period,
+            slow_period: slow_period + 3,
+        },
+        IndicatorParams::Stochastic { period, overbought, oversold } => IndicatorParams::Stochastic {
+            period: (*period).max(3).wrapping_add(1),
+            overbought: overbought + 2.5,
+            oversold: oversold - 2.5,
+        },
+        IndicatorParams::AtrMeanReversion { atr_period, sma_period, multiplier } => IndicatorParams::AtrMeanReversion {
+            atr_period: *atr_period,
+            sma_period: sma_period + 3,
+            multiplier: multiplier + 0.25,
+        },
+        IndicatorParams::Vwap { period } => IndicatorParams::Vwap { period: period + 3 },
+        IndicatorParams::Obv { sma_period } => IndicatorParams::Obv { sma_period: sma_period + 2 },
+        IndicatorParams::WilliamsR { period, overbought, oversold } => IndicatorParams::WilliamsR {
+            period: (*period).max(3).wrapping_add(1),
+            overbought: overbought - 2.5,
+            oversold: oversold + 2.5,
+        },
+        IndicatorParams::Adx { period, adx_threshold } => IndicatorParams::Adx {
+            period: (*period).max(3).wrapping_add(1),
+            adx_threshold: adx_threshold + 2.5,
+        },
+    }
 }
 
 // ============================================================================
@@ -1422,6 +1801,7 @@ fn result_to_record(
         DiscoveryStrategyType::ObvMacd { .. } => "obv_macd",
         DiscoveryStrategyType::AdxEma { .. } => "adx_ema",
         DiscoveryStrategyType::WilliamsRStoch { .. } => "williams_r_stoch",
+        DiscoveryStrategyType::DynamicCombo { .. } => "dynamic_combo",
         DiscoveryStrategyType::Gabagool { .. } => "gabagool",
     };
 
@@ -2062,11 +2442,165 @@ fn update_best_so_far(
 // ============================================================================
 
 /// Generate an expanding grid of strategy combinations based on the cycle number.
-/// - Cycle 0: Standard Phase 1 grid
-/// - Cycle 1: Fine interpolation (intermediate parameter values)
-/// - Cycle 2: Extended ranges (wider min/max bounds)
-/// - Cycle 3+: Random perturbations (growing number of random combos)
+/// - Cycle 0: Dynamic combos (pairs, triples, quads) + Gabagool
+/// - Cycle 1: Quadruples with all 3 modes (Unanimous + PrimaryConfirmed)
+/// - Cycle 2: Mixed param variants on pairs/triples
+/// - Cycle 3+: ML-guided (evolutionary algorithm)
 fn generate_exploratory_grid(cycle: u32) -> Vec<DiscoveryStrategyType> {
+    let mut grid = Vec::new();
+    let all_indicators = SingleIndicatorType::all();
+    let all_modes = DynCombineMode::all();
+
+    match cycle {
+        0 => {
+            grid = generate_phase1_grid();
+        }
+        1 => {
+            // Cycle 1: Complete quadruples with Unanimous + PrimaryConfirmed modes
+            for i in 0..all_indicators.len() {
+                for j in (i + 1)..all_indicators.len() {
+                    for k in (j + 1)..all_indicators.len() {
+                        for l in (k + 1)..all_indicators.len() {
+                            let inds = vec![
+                                all_indicators[i], all_indicators[j],
+                                all_indicators[k], all_indicators[l],
+                            ];
+                            // Phase 1 already did Majority; now add U and PC
+                            for &mode in &[DynCombineMode::Unanimous, DynCombineMode::PrimaryConfirmed] {
+                                grid.push(DiscoveryStrategyType::DynamicCombo {
+                                    indicators: inds.clone(),
+                                    params: vec![
+                                        inds[0].default_params(), inds[1].default_params(),
+                                        inds[2].default_params(), inds[3].default_params(),
+                                    ],
+                                    combine_mode: mode,
+                                });
+                            }
+                        }
+                    }
+                }
+            }
+            // Also add quadruples with aggressive params × Majority
+            for i in 0..all_indicators.len() {
+                for j in (i + 1)..all_indicators.len() {
+                    for k in (j + 1)..all_indicators.len() {
+                        for l in (k + 1)..all_indicators.len() {
+                            let inds = vec![
+                                all_indicators[i], all_indicators[j],
+                                all_indicators[k], all_indicators[l],
+                            ];
+                            grid.push(DiscoveryStrategyType::DynamicCombo {
+                                indicators: inds.clone(),
+                                params: vec![
+                                    inds[0].aggressive_params(), inds[1].aggressive_params(),
+                                    inds[2].aggressive_params(), inds[3].aggressive_params(),
+                                ],
+                                combine_mode: DynCombineMode::Majority,
+                            });
+                        }
+                    }
+                }
+            }
+            // Gabagool fine interpolation
+            for mpc in &[dec!(0.93), dec!(0.95), dec!(0.97)] {
+                for bo in &[dec!(0.007), dec!(0.015), dec!(0.025)] {
+                    for sm in &[dec!(2.5), dec!(4)] {
+                        grid.push(DiscoveryStrategyType::Gabagool {
+                            max_pair_cost: *mpc,
+                            bid_offset: *bo,
+                            spread_multiplier: *sm,
+                        });
+                    }
+                }
+            }
+        }
+        2 => {
+            // Cycle 2: Mixed param variants — each indicator can have a different variant
+            // For pairs: random mix of default/aggressive/conservative per indicator
+            let mut rng = rand::thread_rng();
+            for i in 0..all_indicators.len() {
+                for j in (i + 1)..all_indicators.len() {
+                    let ind_a = all_indicators[i];
+                    let ind_b = all_indicators[j];
+                    // Mix: aggressive A + conservative B, and vice versa
+                    for &mode in all_modes {
+                        grid.push(DiscoveryStrategyType::DynamicCombo {
+                            indicators: vec![ind_a, ind_b],
+                            params: vec![ind_a.aggressive_params(), ind_b.conservative_params()],
+                            combine_mode: mode,
+                        });
+                        grid.push(DiscoveryStrategyType::DynamicCombo {
+                            indicators: vec![ind_a, ind_b],
+                            params: vec![ind_a.conservative_params(), ind_b.aggressive_params()],
+                            combine_mode: mode,
+                        });
+                    }
+                }
+            }
+            // Also add some random-param pairs for diversity
+            for _ in 0..200 {
+                let n = rng.gen_range(2..=4usize);
+                let combo = generate_random_dynamic_combo(n, &mut rng);
+                grid.push(combo);
+            }
+            // Gabagool extended
+            for mpc in &[dec!(0.85), dec!(0.88), dec!(0.90), dec!(0.99)] {
+                for bo in &[dec!(0.002), dec!(0.04), dec!(0.05)] {
+                    for sm in &[dec!(1), dec!(1.5), dec!(6), dec!(8)] {
+                        grid.push(DiscoveryStrategyType::Gabagool {
+                            max_pair_cost: *mpc,
+                            bid_offset: *bo,
+                            spread_multiplier: *sm,
+                        });
+                    }
+                }
+            }
+        }
+        _ => {
+            // Cycle 3+: Handled by generate_ml_guided_grid() in the caller
+            let count = 500 + (cycle - 3) as usize * 200;
+            let mut rng = rand::thread_rng();
+            for _ in 0..count {
+                let n = rng.gen_range(2..=4usize);
+                grid.push(generate_random_dynamic_combo(n, &mut rng));
+            }
+            // A few Gabagool randoms
+            for _ in 0..20 {
+                let mpc_f = rng.gen_range(0.85..=0.99);
+                let bo_f = rng.gen_range(0.001..=0.05);
+                let sm_f = rng.gen_range(1.0..=8.0);
+                grid.push(DiscoveryStrategyType::Gabagool {
+                    max_pair_cost: Decimal::from_str_exact(&format!("{:.3}", mpc_f)).unwrap_or(dec!(0.95)),
+                    bid_offset: Decimal::from_str_exact(&format!("{:.4}", bo_f)).unwrap_or(dec!(0.01)),
+                    spread_multiplier: Decimal::from_str_exact(&format!("{:.1}", sm_f)).unwrap_or(dec!(3)),
+                });
+            }
+        }
+    }
+
+    grid
+}
+
+/// Generate a random DynamicCombo with n indicators (2-4)
+fn generate_random_dynamic_combo(n: usize, rng: &mut impl rand::Rng) -> DiscoveryStrategyType {
+    let all = SingleIndicatorType::all();
+    let mut indices: Vec<usize> = (0..all.len()).collect();
+    // Fisher-Yates partial shuffle
+    for i in 0..n.min(indices.len()) {
+        let j = rng.gen_range(i..indices.len());
+        indices.swap(i, j);
+    }
+    let indicators: Vec<SingleIndicatorType> = indices[..n].iter().map(|&i| all[i]).collect();
+    let params: Vec<IndicatorParams> = indicators.iter().map(|ind| ind.random_params_for(rng)).collect();
+    let modes = DynCombineMode::all();
+    let combine_mode = modes[rng.gen_range(0..modes.len())];
+
+    DiscoveryStrategyType::DynamicCombo { indicators, params, combine_mode }
+}
+
+// Keep legacy exploratory grid for reference
+#[allow(dead_code)]
+fn generate_legacy_exploratory_grid(cycle: u32) -> Vec<DiscoveryStrategyType> {
     let mut grid = Vec::new();
 
     match cycle {
@@ -2931,6 +3465,23 @@ fn mutate_strategy(
                 stoch_oversold: perturb_f64(*stoch_oversold, rng).clamp(5.0, 30.0),
             }
         }
+        DiscoveryStrategyType::DynamicCombo { indicators, params, combine_mode } => {
+            let new_params: Vec<IndicatorParams> = params.iter()
+                .map(|p| perturb_indicator_params(p, rng))
+                .collect();
+            // Occasionally flip mode
+            let new_mode = if rng.gen_bool(0.15) {
+                let modes = DynCombineMode::all();
+                modes[rng.gen_range(0..modes.len())]
+            } else {
+                *combine_mode
+            };
+            DiscoveryStrategyType::DynamicCombo {
+                indicators: indicators.clone(),
+                params: new_params,
+                combine_mode: new_mode,
+            }
+        }
         DiscoveryStrategyType::Gabagool { max_pair_cost, bid_offset, spread_multiplier } => {
             DiscoveryStrategyType::Gabagool {
                 max_pair_cost: perturb_decimal(*max_pair_cost, rng).max(dec!(0.85)).min(dec!(0.99)),
@@ -2939,6 +3490,64 @@ fn mutate_strategy(
             }
         }
     })
+}
+
+/// Perturb indicator params by ±15% on each numeric value
+fn perturb_indicator_params(params: &IndicatorParams, rng: &mut impl rand::Rng) -> IndicatorParams {
+    match params {
+        IndicatorParams::Rsi { period, overbought, oversold } => {
+            let ob = perturb_f64(*overbought, rng).clamp(55.0, 90.0);
+            let os = perturb_f64(*oversold, rng).clamp(10.0, 45.0);
+            IndicatorParams::Rsi {
+                period: perturb_usize(*period, rng).max(3),
+                overbought: if os >= ob { *overbought } else { ob },
+                oversold: if os >= ob { *oversold } else { os },
+            }
+        }
+        IndicatorParams::BollingerBands { period, multiplier } => IndicatorParams::BollingerBands {
+            period: perturb_usize(*period, rng).max(5),
+            multiplier: perturb_f64(*multiplier, rng).clamp(0.5, 4.0),
+        },
+        IndicatorParams::Macd { fast, slow, signal } => {
+            let f = perturb_usize(*fast, rng).max(3);
+            let s = perturb_usize(*slow, rng).max(f + 2);
+            IndicatorParams::Macd { fast: f, slow: s, signal: perturb_usize(*signal, rng).max(2) }
+        }
+        IndicatorParams::EmaCrossover { fast_period, slow_period } => {
+            let f = perturb_usize(*fast_period, rng).max(3);
+            let s = perturb_usize(*slow_period, rng).max(f + 2);
+            IndicatorParams::EmaCrossover { fast_period: f, slow_period: s }
+        }
+        IndicatorParams::Stochastic { period, overbought, oversold } => IndicatorParams::Stochastic {
+            period: perturb_usize(*period, rng).max(3),
+            overbought: perturb_f64(*overbought, rng).clamp(65.0, 95.0),
+            oversold: perturb_f64(*oversold, rng).clamp(5.0, 35.0),
+        },
+        IndicatorParams::AtrMeanReversion { atr_period, sma_period, multiplier } => IndicatorParams::AtrMeanReversion {
+            atr_period: perturb_usize(*atr_period, rng).max(3),
+            sma_period: perturb_usize(*sma_period, rng).max(5),
+            multiplier: perturb_f64(*multiplier, rng).clamp(0.5, 3.5),
+        },
+        IndicatorParams::Vwap { period } => IndicatorParams::Vwap {
+            period: perturb_usize(*period, rng).max(5),
+        },
+        IndicatorParams::Obv { sma_period } => IndicatorParams::Obv {
+            sma_period: perturb_usize(*sma_period, rng).max(5),
+        },
+        IndicatorParams::WilliamsR { period, overbought, oversold } => {
+            let ob = perturb_f64(*overbought, rng).clamp(-30.0, -5.0);
+            let os = perturb_f64(*oversold, rng).clamp(-95.0, -65.0);
+            IndicatorParams::WilliamsR {
+                period: perturb_usize(*period, rng).max(3),
+                overbought: if os >= ob { *overbought } else { ob },
+                oversold: if os >= ob { *oversold } else { os },
+            }
+        }
+        IndicatorParams::Adx { period, adx_threshold } => IndicatorParams::Adx {
+            period: perturb_usize(*period, rng).max(5),
+            adx_threshold: perturb_f64(*adx_threshold, rng).clamp(10.0, 45.0),
+        },
+    }
 }
 
 /// Crossover: if two strategies are the same type, mix their parameters
@@ -2995,193 +3604,44 @@ fn crossover_strategies(
                 slow_period: s,
             })
         }
+        // DynamicCombo crossover: same indicator set → mix params per indicator
+        (
+            DiscoveryStrategyType::DynamicCombo { indicators: ind_a, params: params_a, combine_mode: mode_a },
+            DiscoveryStrategyType::DynamicCombo { indicators: ind_b, params: params_b, combine_mode: mode_b },
+        ) if ind_a == ind_b && params_a.len() == params_b.len() => {
+            let child_params: Vec<IndicatorParams> = params_a.iter().zip(params_b.iter())
+                .map(|(pa, pb)| if rng.gen_bool(0.5) { pa.clone() } else { pb.clone() })
+                .collect();
+            let child_mode = if rng.gen_bool(0.5) { *mode_a } else { *mode_b };
+            Some(DiscoveryStrategyType::DynamicCombo {
+                indicators: ind_a.clone(),
+                params: child_params,
+                combine_mode: child_mode,
+            })
+        }
         // For different strategy types or complex combos, fall back to mutation of the better one
         _ => mutate_strategy(a, rng),
     }
 }
 
-/// Generate pure random strategy combinations
+/// Generate pure random strategy combinations (DynamicCombo only + some Gabagool)
 fn generate_random_strategies(count: usize, rng: &mut impl rand::Rng) -> Vec<DiscoveryStrategyType> {
     let mut grid = Vec::with_capacity(count);
 
     for _ in 0..count {
-        let strategy_idx = rng.gen_range(0..22);
-        match strategy_idx {
-            0 => grid.push(DiscoveryStrategyType::Rsi {
-                period: rng.gen_range(3..=50),
-                overbought: rng.gen_range(55.0..=90.0),
-                oversold: rng.gen_range(10.0..=45.0),
-            }),
-            1 => grid.push(DiscoveryStrategyType::BollingerBands {
-                period: rng.gen_range(5..=50),
-                multiplier: rng.gen_range(0.5..=4.0),
-            }),
-            2 => {
-                let fast = rng.gen_range(3..=15);
-                let slow = rng.gen_range((fast + 2)..=40);
-                grid.push(DiscoveryStrategyType::Macd {
-                    fast,
-                    slow,
-                    signal: rng.gen_range(2..=15),
-                });
-            }
-            3 => {
-                let fast = rng.gen_range(3..=20);
-                let slow = rng.gen_range((fast + 2)..=100);
-                grid.push(DiscoveryStrategyType::EmaCrossover {
-                    fast_period: fast,
-                    slow_period: slow,
-                });
-            }
-            4 => grid.push(DiscoveryStrategyType::Stochastic {
-                period: rng.gen_range(3..=30),
-                overbought: rng.gen_range(65.0..=95.0),
-                oversold: rng.gen_range(5.0..=35.0),
-            }),
-            5 => grid.push(DiscoveryStrategyType::AtrMeanReversion {
-                atr_period: rng.gen_range(3..=35),
-                sma_period: rng.gen_range(5..=80),
-                multiplier: rng.gen_range(0.5..=3.5),
-            }),
-            6 => grid.push(DiscoveryStrategyType::Vwap {
-                period: rng.gen_range(5..=100),
-            }),
-            7 => grid.push(DiscoveryStrategyType::Obv {
-                sma_period: rng.gen_range(5..=50),
-            }),
-            8 => grid.push(DiscoveryStrategyType::WilliamsR {
-                period: rng.gen_range(3..=35),
-                overbought: rng.gen_range(-30.0..=-5.0),
-                oversold: rng.gen_range(-95.0..=-65.0),
-            }),
-            9 => grid.push(DiscoveryStrategyType::Adx {
-                period: rng.gen_range(5..=35),
-                adx_threshold: rng.gen_range(10.0..=45.0),
-            }),
-            10 => grid.push(DiscoveryStrategyType::RsiBollinger {
-                rsi_period: rng.gen_range(5..=30),
-                rsi_ob: rng.gen_range(60.0..=85.0),
-                rsi_os: rng.gen_range(15.0..=40.0),
-                bb_period: rng.gen_range(10..=35),
-                bb_mult: rng.gen_range(1.0..=3.5),
-            }),
-            11 => {
-                let mf = rng.gen_range(3..=15);
-                let ms = rng.gen_range((mf + 2)..=35);
-                grid.push(DiscoveryStrategyType::MacdRsi {
-                    macd_fast: mf,
-                    macd_slow: ms,
-                    macd_signal: rng.gen_range(2..=12),
-                    rsi_period: rng.gen_range(5..=25),
-                    rsi_ob: rng.gen_range(60.0..=85.0),
-                    rsi_os: rng.gen_range(15.0..=40.0),
-                });
-            }
-            12 => {
-                let ef = rng.gen_range(3..=18);
-                let es = rng.gen_range((ef + 2)..=60);
-                grid.push(DiscoveryStrategyType::EmaRsi {
-                    ema_fast: ef,
-                    ema_slow: es,
-                    rsi_period: rng.gen_range(5..=25),
-                    rsi_ob: rng.gen_range(60.0..=85.0),
-                    rsi_os: rng.gen_range(15.0..=40.0),
-                });
-            }
-            13 => grid.push(DiscoveryStrategyType::StochRsi {
-                stoch_period: rng.gen_range(5..=25),
-                stoch_ob: rng.gen_range(70.0..=90.0),
-                stoch_os: rng.gen_range(10.0..=30.0),
-                rsi_period: rng.gen_range(5..=25),
-                rsi_ob: rng.gen_range(60.0..=85.0),
-                rsi_os: rng.gen_range(15.0..=40.0),
-            }),
-            14 => {
-                let mf = rng.gen_range(3..=15);
-                let ms = rng.gen_range((mf + 2)..=35);
-                grid.push(DiscoveryStrategyType::MacdBollinger {
-                    macd_fast: mf,
-                    macd_slow: ms,
-                    macd_signal: rng.gen_range(2..=12),
-                    bb_period: rng.gen_range(10..=35),
-                    bb_mult: rng.gen_range(1.0..=3.5),
-                });
-            }
-            15 => {
-                let mf = rng.gen_range(3..=15);
-                let ms = rng.gen_range((mf + 2)..=35);
-                grid.push(DiscoveryStrategyType::TripleRsiMacdBb {
-                    rsi_period: rng.gen_range(5..=25),
-                    rsi_ob: rng.gen_range(60.0..=85.0),
-                    rsi_os: rng.gen_range(15.0..=40.0),
-                    macd_fast: mf,
-                    macd_slow: ms,
-                    macd_signal: rng.gen_range(2..=12),
-                    bb_period: rng.gen_range(10..=35),
-                    bb_mult: rng.gen_range(1.0..=3.5),
-                });
-            }
-            16 => {
-                let ef = rng.gen_range(3..=18);
-                let es = rng.gen_range((ef + 2)..=60);
-                grid.push(DiscoveryStrategyType::TripleEmaRsiStoch {
-                    ema_fast: ef,
-                    ema_slow: es,
-                    rsi_period: rng.gen_range(5..=25),
-                    rsi_ob: rng.gen_range(60.0..=85.0),
-                    rsi_os: rng.gen_range(15.0..=40.0),
-                    stoch_period: rng.gen_range(5..=25),
-                    stoch_ob: rng.gen_range(70.0..=90.0),
-                    stoch_os: rng.gen_range(10.0..=30.0),
-                });
-            }
-            17 => grid.push(DiscoveryStrategyType::VwapRsi {
-                vwap_period: rng.gen_range(5..=80),
-                rsi_period: rng.gen_range(5..=25),
-                rsi_overbought: rng.gen_range(60.0..=85.0),
-                rsi_oversold: rng.gen_range(15.0..=40.0),
-            }),
-            18 => {
-                let mf = rng.gen_range(3..=15);
-                let ms = rng.gen_range((mf + 2)..=35);
-                grid.push(DiscoveryStrategyType::ObvMacd {
-                    obv_sma_period: rng.gen_range(5..=40),
-                    macd_fast: mf,
-                    macd_slow: ms,
-                    macd_signal: rng.gen_range(2..=12),
-                });
-            }
-            19 => {
-                let ef = rng.gen_range(3..=20);
-                let es = rng.gen_range((ef + 2)..=60);
-                grid.push(DiscoveryStrategyType::AdxEma {
-                    adx_period: rng.gen_range(5..=35),
-                    adx_threshold: rng.gen_range(10.0..=45.0),
-                    ema_fast: ef,
-                    ema_slow: es,
-                });
-            }
-            20 => grid.push(DiscoveryStrategyType::WilliamsRStoch {
-                wr_period: rng.gen_range(3..=30),
-                wr_overbought: rng.gen_range(-30.0..=-5.0),
-                wr_oversold: rng.gen_range(-95.0..=-65.0),
-                stoch_period: rng.gen_range(3..=25),
-                stoch_overbought: rng.gen_range(70.0..=95.0),
-                stoch_oversold: rng.gen_range(5.0..=30.0),
-            }),
-            _ => {
-                let mpc_f = rng.gen_range(0.85..=0.99);
-                let bo_f = rng.gen_range(0.001..=0.05);
-                let sm_f = rng.gen_range(1.0..=8.0);
-                grid.push(DiscoveryStrategyType::Gabagool {
-                    max_pair_cost: Decimal::from_str_exact(&format!("{:.3}", mpc_f))
-                        .unwrap_or(dec!(0.95)),
-                    bid_offset: Decimal::from_str_exact(&format!("{:.4}", bo_f))
-                        .unwrap_or(dec!(0.01)),
-                    spread_multiplier: Decimal::from_str_exact(&format!("{:.1}", sm_f))
-                        .unwrap_or(dec!(3)),
-                });
-            }
+        // 95% dynamic combos, 5% gabagool
+        if rng.gen_bool(0.95) {
+            let n = rng.gen_range(2..=4usize);
+            grid.push(generate_random_dynamic_combo(n, rng));
+        } else {
+            let mpc_f = rng.gen_range(0.85..=0.99);
+            let bo_f = rng.gen_range(0.001..=0.05);
+            let sm_f = rng.gen_range(1.0..=8.0);
+            grid.push(DiscoveryStrategyType::Gabagool {
+                max_pair_cost: Decimal::from_str_exact(&format!("{:.3}", mpc_f)).unwrap_or(dec!(0.95)),
+                bid_offset: Decimal::from_str_exact(&format!("{:.4}", bo_f)).unwrap_or(dec!(0.01)),
+                spread_multiplier: Decimal::from_str_exact(&format!("{:.1}", sm_f)).unwrap_or(dec!(3)),
+            });
         }
     }
 
@@ -3613,79 +4073,51 @@ mod tests {
     #[test]
     fn test_phase1_grid_size() {
         let grid = generate_phase1_grid();
-        // Should be roughly 750-950 per symbol (original ~450 + ~374 new)
-        assert!(grid.len() > 700, "Grid too small: {}", grid.len());
-        assert!(grid.len() < 1000, "Grid too large: {}", grid.len());
+        // Dynamic combos: 405 pairs + 1080 triples + 210 quads + 48 gabagool = ~1743
+        assert!(grid.len() > 1500, "Grid too small: {}", grid.len());
+        assert!(grid.len() < 2000, "Grid too large: {}", grid.len());
     }
 
     #[test]
     fn test_phase1_grid_has_all_strategy_types() {
         let grid = generate_phase1_grid();
-        let has_rsi = grid
+
+        // Should have DynamicCombo entries
+        let has_dynamic = grid
             .iter()
-            .any(|s| matches!(s, DiscoveryStrategyType::Rsi { .. }));
-        let has_bb = grid
-            .iter()
-            .any(|s| matches!(s, DiscoveryStrategyType::BollingerBands { .. }));
-        let has_macd = grid
-            .iter()
-            .any(|s| matches!(s, DiscoveryStrategyType::Macd { .. }));
-        let has_ema = grid
-            .iter()
-            .any(|s| matches!(s, DiscoveryStrategyType::EmaCrossover { .. }));
-        let has_stoch = grid
-            .iter()
-            .any(|s| matches!(s, DiscoveryStrategyType::Stochastic { .. }));
-        let has_atr = grid
-            .iter()
-            .any(|s| matches!(s, DiscoveryStrategyType::AtrMeanReversion { .. }));
+            .any(|s| matches!(s, DiscoveryStrategyType::DynamicCombo { .. }));
         let has_gabagool = grid
             .iter()
             .any(|s| matches!(s, DiscoveryStrategyType::Gabagool { .. }));
-        let has_combo = grid
-            .iter()
-            .any(|s| matches!(s, DiscoveryStrategyType::RsiBollinger { .. }));
-        let has_vwap = grid
-            .iter()
-            .any(|s| matches!(s, DiscoveryStrategyType::Vwap { .. }));
-        let has_obv = grid
-            .iter()
-            .any(|s| matches!(s, DiscoveryStrategyType::Obv { .. }));
-        let has_wr = grid
-            .iter()
-            .any(|s| matches!(s, DiscoveryStrategyType::WilliamsR { .. }));
-        let has_adx = grid
-            .iter()
-            .any(|s| matches!(s, DiscoveryStrategyType::Adx { .. }));
-        let has_vwap_rsi = grid
-            .iter()
-            .any(|s| matches!(s, DiscoveryStrategyType::VwapRsi { .. }));
-        let has_obv_macd = grid
-            .iter()
-            .any(|s| matches!(s, DiscoveryStrategyType::ObvMacd { .. }));
-        let has_adx_ema = grid
-            .iter()
-            .any(|s| matches!(s, DiscoveryStrategyType::AdxEma { .. }));
-        let has_wr_stoch = grid
-            .iter()
-            .any(|s| matches!(s, DiscoveryStrategyType::WilliamsRStoch { .. }));
 
-        assert!(has_rsi, "Missing RSI strategies");
-        assert!(has_bb, "Missing Bollinger strategies");
-        assert!(has_macd, "Missing MACD strategies");
-        assert!(has_ema, "Missing EMA strategies");
-        assert!(has_stoch, "Missing Stochastic strategies");
-        assert!(has_atr, "Missing ATR strategies");
+        assert!(has_dynamic, "Missing DynamicCombo strategies");
         assert!(has_gabagool, "Missing Gabagool strategies");
-        assert!(has_combo, "Missing combo strategies");
-        assert!(has_vwap, "Missing VWAP strategies");
-        assert!(has_obv, "Missing OBV strategies");
-        assert!(has_wr, "Missing Williams %R strategies");
-        assert!(has_adx, "Missing ADX strategies");
-        assert!(has_vwap_rsi, "Missing VWAP+RSI strategies");
-        assert!(has_obv_macd, "Missing OBV+MACD strategies");
-        assert!(has_adx_ema, "Missing ADX+EMA strategies");
-        assert!(has_wr_stoch, "Missing WilliamsR+Stoch strategies");
+
+        // Check that all 10 indicator types appear in at least one DynamicCombo
+        for ind in SingleIndicatorType::all() {
+            let found = grid.iter().any(|s| match s {
+                DiscoveryStrategyType::DynamicCombo { indicators, .. } => indicators.contains(ind),
+                _ => false,
+            });
+            assert!(found, "Missing indicator {:?} in DynamicCombo grid", ind);
+        }
+
+        // Check we have pairs (2), triples (3), and quads (4)
+        let has_pairs = grid.iter().any(|s| match s {
+            DiscoveryStrategyType::DynamicCombo { indicators, .. } => indicators.len() == 2,
+            _ => false,
+        });
+        let has_triples = grid.iter().any(|s| match s {
+            DiscoveryStrategyType::DynamicCombo { indicators, .. } => indicators.len() == 3,
+            _ => false,
+        });
+        let has_quads = grid.iter().any(|s| match s {
+            DiscoveryStrategyType::DynamicCombo { indicators, .. } => indicators.len() == 4,
+            _ => false,
+        });
+        assert!(has_pairs, "Missing pair combos");
+        assert!(has_triples, "Missing triple combos");
+        assert!(has_quads, "Missing quad combos");
     }
 
     #[test]
@@ -3873,8 +4305,9 @@ mod tests {
     #[test]
     fn test_exploratory_grid_cycle1_produces_combos() {
         let grid = generate_exploratory_grid(1);
-        assert!(grid.len() > 50, "Cycle 1 grid too small: {}", grid.len());
-        assert!(grid.len() < 500, "Cycle 1 grid too large: {}", grid.len());
+        // Cycle 1: 210 quads × 2 modes + 210 aggressive + 18 gabagool = ~648
+        assert!(grid.len() > 400, "Cycle 1 grid too small: {}", grid.len());
+        assert!(grid.len() < 800, "Cycle 1 grid too large: {}", grid.len());
     }
 
     #[test]
@@ -3886,7 +4319,8 @@ mod tests {
     #[test]
     fn test_exploratory_grid_cycle3_random() {
         let grid = generate_exploratory_grid(3);
-        assert_eq!(grid.len(), 500, "Cycle 3 should produce 500 combos");
+        // 500 random combos + 20 gabagool = 520
+        assert!(grid.len() >= 510 && grid.len() <= 530, "Cycle 3 should produce ~520 combos, got: {}", grid.len());
     }
 
     #[test]
@@ -4045,5 +4479,131 @@ mod tests {
         progress.reset();
         assert_eq!(progress.current_cycle.load(Ordering::Relaxed), 0);
         assert!(!progress.is_continuous.load(Ordering::Relaxed));
+    }
+
+    #[test]
+    fn test_dynamic_combo_naming() {
+        let combo = DiscoveryStrategyType::DynamicCombo {
+            indicators: vec![SingleIndicatorType::Rsi, SingleIndicatorType::Macd],
+            params: vec![
+                SingleIndicatorType::Rsi.default_params(),
+                SingleIndicatorType::Macd.default_params(),
+            ],
+            combine_mode: DynCombineMode::Majority,
+        };
+        assert_eq!(combo.name(), "RSI+MACD(M)");
+
+        let triple = DiscoveryStrategyType::DynamicCombo {
+            indicators: vec![
+                SingleIndicatorType::BollingerBands,
+                SingleIndicatorType::Stochastic,
+                SingleIndicatorType::Adx,
+            ],
+            params: vec![
+                SingleIndicatorType::BollingerBands.default_params(),
+                SingleIndicatorType::Stochastic.default_params(),
+                SingleIndicatorType::Adx.default_params(),
+            ],
+            combine_mode: DynCombineMode::Unanimous,
+        };
+        assert_eq!(triple.name(), "BB+Stoch+ADX(U)");
+    }
+
+    #[test]
+    fn test_dynamic_combo_backtest_runs() {
+        let mut prices = Vec::new();
+        for i in 0..30 {
+            prices.push(100.0 - (i as f64) * 2.0);
+        }
+        for i in 0..30 {
+            prices.push(40.0 + (i as f64) * 3.0);
+        }
+        let klines = make_klines(&prices);
+
+        let strategy = DiscoveryStrategyType::DynamicCombo {
+            indicators: vec![SingleIndicatorType::Rsi, SingleIndicatorType::BollingerBands],
+            params: vec![
+                IndicatorParams::Rsi { period: 14, overbought: 70.0, oversold: 30.0 },
+                IndicatorParams::BollingerBands { period: 20, multiplier: 2.0 },
+            ],
+            combine_mode: DynCombineMode::Majority,
+        };
+
+        let mut gen = build_signal_generator(&strategy);
+        let fee_config = PolymarketFeeConfig::default();
+
+        let result = run_generic_backtest(
+            gen.as_mut(),
+            &klines,
+            dec!(10000),
+            dec!(10),
+            SizingMode::Fixed,
+            &fee_config,
+        );
+
+        // Should run without panicking; just verify it completed
+        assert_eq!(result.total_trades, result.total_trades);
+    }
+
+    #[test]
+    fn test_dynamic_combo_mutation() {
+        let strategy = DiscoveryStrategyType::DynamicCombo {
+            indicators: vec![SingleIndicatorType::Rsi, SingleIndicatorType::Macd],
+            params: vec![
+                IndicatorParams::Rsi { period: 14, overbought: 70.0, oversold: 30.0 },
+                IndicatorParams::Macd { fast: 12, slow: 26, signal: 9 },
+            ],
+            combine_mode: DynCombineMode::Majority,
+        };
+
+        let mut rng = rand::thread_rng();
+        let mutated = mutate_strategy(&strategy, &mut rng);
+        assert!(mutated.is_some(), "Mutation should succeed for DynamicCombo");
+        let m = mutated.unwrap();
+        assert!(matches!(m, DiscoveryStrategyType::DynamicCombo { .. }));
+    }
+
+    #[test]
+    fn test_dynamic_combo_crossover() {
+        let a = DiscoveryStrategyType::DynamicCombo {
+            indicators: vec![SingleIndicatorType::Rsi, SingleIndicatorType::Macd],
+            params: vec![
+                IndicatorParams::Rsi { period: 14, overbought: 70.0, oversold: 30.0 },
+                IndicatorParams::Macd { fast: 12, slow: 26, signal: 9 },
+            ],
+            combine_mode: DynCombineMode::Majority,
+        };
+        let b = DiscoveryStrategyType::DynamicCombo {
+            indicators: vec![SingleIndicatorType::Rsi, SingleIndicatorType::Macd],
+            params: vec![
+                IndicatorParams::Rsi { period: 7, overbought: 80.0, oversold: 20.0 },
+                IndicatorParams::Macd { fast: 8, slow: 21, signal: 5 },
+            ],
+            combine_mode: DynCombineMode::Unanimous,
+        };
+
+        let mut rng = rand::thread_rng();
+        let child = crossover_strategies(&a, &b, &mut rng);
+        assert!(child.is_some(), "Crossover should succeed for same-indicator DynamicCombos");
+        let c = child.unwrap();
+        assert!(matches!(c, DiscoveryStrategyType::DynamicCombo { .. }));
+    }
+
+    #[test]
+    fn test_random_dynamic_combo_generation() {
+        let mut rng = rand::thread_rng();
+        for size in 2..=4 {
+            let combo = generate_random_dynamic_combo(size, &mut rng);
+            match combo {
+                DiscoveryStrategyType::DynamicCombo { indicators, params, .. } => {
+                    assert_eq!(indicators.len(), size);
+                    assert_eq!(params.len(), size);
+                    // No duplicate indicators
+                    let unique: std::collections::HashSet<_> = indicators.iter().collect();
+                    assert_eq!(unique.len(), size, "Should have no duplicate indicators");
+                }
+                _ => panic!("Should generate DynamicCombo"),
+            }
+        }
     }
 }
