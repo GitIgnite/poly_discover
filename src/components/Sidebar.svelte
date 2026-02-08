@@ -1,5 +1,5 @@
 <script>
-  import { Search, Database, Sparkles, Trophy, BookOpen, PanelLeftClose, PanelLeftOpen, Menu, X } from 'lucide-svelte';
+  import { Search, Database, Sparkles, Trophy, BookOpen, Crown, PanelLeftClose, PanelLeftOpen, Menu, X } from 'lucide-svelte';
   import { currentPage, serverHealth, discoveryStatus } from '../lib/stores.js';
 
   let collapsed = $state(false);
@@ -11,6 +11,7 @@
     { id: 'playbook', label: 'Playbook', icon: BookOpen, color: 'violet' },
     { id: 'knowledge', label: 'Knowledge Base', icon: Database, color: 'emerald' },
     { id: 'optimizer', label: 'Optimizer', icon: Sparkles, color: 'amber' },
+    { id: 'leaderboard', label: 'Leaderboard', icon: Crown, color: 'rose' },
   ];
 
   const colorMap = {
@@ -19,6 +20,7 @@
     violet: { active: 'bg-violet-600 text-white', dot: 'bg-violet-400' },
     emerald: { active: 'bg-emerald-600 text-white', dot: 'bg-emerald-400' },
     amber: { active: 'bg-amber-600 text-white', dot: 'bg-amber-400' },
+    rose: { active: 'bg-rose-600 text-white', dot: 'bg-rose-400' },
   };
 
   function navigate(pageId) {
