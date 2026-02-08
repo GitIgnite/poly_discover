@@ -92,7 +92,7 @@ src/
 ├── pages/
 │   ├── Discovery.svelte    Start/Stop button, reads global discoveryStatus store
 │   ├── TopStrategies.svelte Top 20 unique strategies by win rate, podium, auto-refresh
-│   ├── Playbook.svelte     Top 10 by PnL with AI-readable strategy descriptions
+│   ├── Playbook.svelte     Top 3 by win rate — Polymarket params + bot implementation guide (FR)
 │   ├── KnowledgeBase.svelte Auto-refresh when discovery running, LIVE badge
 │   └── Optimizer.svelte    Parameter optimization UI
 └── components/
@@ -109,7 +109,7 @@ Le statut discovery est géré au niveau **App.svelte** (pas dans Discovery.svel
 - **Polling global** (App.svelte) : toutes les 2s, appelle `/api/discover/status` et met à jour le store
 - **Discovery.svelte** : lit le store, affiche Start/Stop, aucun polling local
 - **TopStrategies.svelte** : top 20 dédupliqué par `strategy_name`, auto-refresh 60s, podium top 3, badge LIVE
-- **Playbook.svelte** : top 10 par PnL, descriptions AI-readable avec paramètres, règles de trading, mapping Polymarket, bouton Copy
+- **Playbook.svelte** : top 3 par win rate (via `getTopStrategies(3, 'win_rate')`), tableau "Paramètres essentiels Polymarket" + "Guide d'implémentation bot" ultra-détaillé (7 sections en FR), bouton Copy
 - **KnowledgeBase.svelte** : auto-refresh toutes les 60s quand `$discoveryStatus.running === true`, badge LIVE
 - **Sidebar.svelte** : pulse dot animé + compteur quand discovery tourne (6 nav items: Discovery, Top 20, Playbook, Knowledge Base, Optimizer)
 
@@ -328,23 +328,36 @@ Ports à ouvrir dans le Security Group EC2 :
 
 ## Historique des changements récents
 
-### Page Playbook — Top 10 par PnL avec descriptions AI-readable (2026-02-08)
+### Page Playbook — Refonte : Top 3 par Win Rate + Guide Bot Polymarket (2026-02-08)
 
-**Nouvelle page** "Strategy Playbook" affichant les 10 meilleures stratégies dédupliquées par Net PnL, avec pour chacune :
-- Card avec métriques clés (PnL, Win Rate, Sharpe, Confidence)
-- Tableau de paramètres avec descriptions
-- Description AI-readable complète (indicator setup, trading rules, mapping Polymarket YES/NO, position sizing, backtest results)
-- Bouton "Copy" pour copier la description dans le presse-papier
+**Refonte complète** de la page Playbook : affiche les **3 meilleures stratégies dédupliquées par win rate** (via `getTopStrategies(3, 'win_rate')`), avec pour chacune :
 
-**Changements backend :**
-- `crates/persistence/src/repository/discovery.rs` : `get_top_unique_strategies()` accepte maintenant `sort_by` (win_rate, net_pnl, composite_score)
-- `crates/server/src/main.rs` : endpoint `/api/knowledge/top-strategies` supporte query param `sort_by`
+1. **Tableau "Paramètres essentiels Polymarket"** (en FR) :
+   - Marché cible, timeframe, source de données, sizing
+   - Paramètres indicateurs (période, seuils, etc.)
+   - Signaux d'action : Signal ACHAT → Buy YES, Signal VENTE → Buy NO
+   - Fonctions : `getPolymarketParams()`, `getIndicatorParams()`, `getSignalParams()`
 
-**Changements frontend :**
-- `src/lib/api.js` : `getTopStrategies(limit, sortBy)` accepte un paramètre de tri
-- `src/pages/Playbook.svelte` : nouvelle page avec `generateAIDescription()` couvrant les 22 stratégies, `parseParams()`, `getTradingRules()`, `getIndicatorSetup()`
-- `src/App.svelte` : routing `playbook`
-- `src/components/Sidebar.svelte` : item "Playbook" avec icône BookOpen (violet)
+2. **"Guide d'implémentation bot"** ultra-détaillé (7 sections en FR) :
+   - SOURCE DE DONNÉES (API Binance klines 15min)
+   - CALCUL DES INDICATEURS (formules détaillées via `getDetailedIndicatorCalc()`)
+   - LOGIQUE DE SIGNAUX (pseudo-code via `getDetailedSignalLogic()`)
+   - EXÉCUTION SUR POLYMARKET (Buy YES / Buy NO)
+   - GESTION DES FRAIS (formule Polymarket)
+   - GESTION DU RISQUE (drawdown, stop-loss)
+   - BOUCLE PRINCIPALE DU BOT (architecture)
+   - Bouton "Copy" pour copier le guide complet
+
+- Médailles 1er/2e/3e avec headers colorés (or/argent/bronze)
+- Couvre les 22 stratégies (10 single, 11 combos, 1 Gabagool)
+
+**Changements backend (inchangés depuis v1) :**
+- `crates/persistence/src/repository/discovery.rs` : `get_top_unique_strategies(limit, sort_by)`
+- `crates/persistence/src/schema.rs` : index `idx_discovery_name_trades(strategy_name, total_trades)`
+- `crates/server/src/main.rs` : endpoint `/api/knowledge/top-strategies` avec `sort_by` query param
+
+**KnowledgeBase — Infobulles FR :**
+- `src/pages/KnowledgeBase.svelte` : attributs `title` sur tous les headers de colonnes, descriptions en français
 
 **Réduction des intervalles de polling :**
 - Discovery status polling : 2s → 30s
