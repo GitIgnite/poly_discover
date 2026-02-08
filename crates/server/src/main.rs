@@ -73,6 +73,12 @@ enum Commands {
         #[arg(long)]
         continuous: bool,
     },
+    /// Cleanup DB: keep top N best results per strategy (positive PnL only), delete the rest
+    Cleanup {
+        /// Number of best results to keep per strategy_name (default 3)
+        #[arg(long, default_value_t = 3)]
+        keep: i64,
+    },
 }
 
 #[derive(Clone)]
@@ -125,6 +131,9 @@ async fn main() -> anyhow::Result<()> {
             continuous,
         } => {
             cmd_run(symbols, days, top_n, sizing, export, continuous).await?;
+        }
+        Commands::Cleanup { keep } => {
+            cmd_cleanup(keep).await?;
         }
     }
 
@@ -964,4 +973,33 @@ fn build_export_json(
         },
         "results": items,
     })
+}
+
+// ============================================================================
+// Cleanup command — keep top N per strategy, delete the rest
+// ============================================================================
+
+async fn cmd_cleanup(keep: i64) -> anyhow::Result<()> {
+    info!("Poly-Discover DB cleanup — keeping top {} per strategy (positive PnL only)", keep);
+
+    let db_path =
+        std::env::var("POLY_DISCOVERY_DB_PATH").unwrap_or_else(|_| "data/discovery.db".to_string());
+    let db = persistence::Database::new(&db_path).await.map_err(|e| {
+        error!("Failed to initialize database: {}", e);
+        anyhow::anyhow!("Database initialization failed: {}", e)
+    })?;
+    info!("Database opened: {}", db_path);
+
+    let repo = DiscoveryRepository::new(db.pool());
+    let (deleted, remaining) = repo.cleanup_keep_top_n(keep).await.map_err(|e| {
+        anyhow::anyhow!("Cleanup failed: {}", e)
+    })?;
+
+    info!("Running VACUUM to reclaim disk space...");
+    repo.vacuum().await.map_err(|e| {
+        anyhow::anyhow!("VACUUM failed: {}", e)
+    })?;
+
+    info!("Done! Deleted {} records, {} remaining.", deleted, remaining);
+    Ok(())
 }

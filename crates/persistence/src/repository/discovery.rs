@@ -319,6 +319,79 @@ impl<'a> DiscoveryRepository<'a> {
         Ok(records)
     }
 
+    /// Cleanup: keep top N results per strategy_name (positive PnL only), delete the rest.
+    /// Returns (deleted_count, remaining_count).
+    pub async fn cleanup_keep_top_n(&self, keep: i64) -> DbResult<(u64, i64)> {
+        // Count before
+        let (total_before,): (i64,) =
+            sqlx::query_as("SELECT COUNT(*) FROM discovery_backtests")
+                .fetch_one(self.pool)
+                .await?;
+
+        tracing::info!("Total records before cleanup: {}", total_before);
+
+        // Per-strategy counts
+        let strategy_counts: Vec<(String, i64)> = sqlx::query_as(
+            "SELECT strategy_name, COUNT(*) as cnt FROM discovery_backtests GROUP BY strategy_name ORDER BY cnt DESC"
+        )
+        .fetch_all(self.pool)
+        .await?;
+
+        tracing::info!("Strategies found: {}", strategy_counts.len());
+        for (name, cnt) in &strategy_counts {
+            tracing::info!("  {} : {} records", name, cnt);
+        }
+
+        // Delete records NOT in the top N per strategy_name (ranked by net_pnl DESC, positive only)
+        let delete_sql = format!(
+            r#"
+            DELETE FROM discovery_backtests
+            WHERE id NOT IN (
+                SELECT id FROM (
+                    SELECT id,
+                        ROW_NUMBER() OVER (PARTITION BY strategy_name ORDER BY CAST(net_pnl AS REAL) DESC) as rn
+                    FROM discovery_backtests
+                    WHERE CAST(net_pnl AS REAL) > 0
+                )
+                WHERE rn <= {}
+            )
+            "#,
+            keep
+        );
+
+        let result = sqlx::query(&delete_sql).execute(self.pool).await?;
+        let deleted = result.rows_affected();
+
+        // Count after
+        let (total_after,): (i64,) =
+            sqlx::query_as("SELECT COUNT(*) FROM discovery_backtests")
+                .fetch_one(self.pool)
+                .await?;
+
+        tracing::info!("Deleted {} records", deleted);
+        tracing::info!("Total records after cleanup: {}", total_after);
+
+        // Show remaining per-strategy
+        let remaining: Vec<(String, i64)> = sqlx::query_as(
+            "SELECT strategy_name, COUNT(*) as cnt FROM discovery_backtests GROUP BY strategy_name ORDER BY cnt DESC"
+        )
+        .fetch_all(self.pool)
+        .await?;
+
+        tracing::info!("Remaining strategies: {}", remaining.len());
+        for (name, cnt) in &remaining {
+            tracing::info!("  {} : {} records", name, cnt);
+        }
+
+        Ok((deleted, total_after))
+    }
+
+    /// VACUUM the database to reclaim disk space
+    pub async fn vacuum(&self) -> DbResult<()> {
+        sqlx::query("VACUUM").execute(self.pool).await?;
+        Ok(())
+    }
+
     /// Get aggregated knowledge base stats
     pub async fn get_stats(&self) -> DbResult<KnowledgeBaseStats> {
         let total: (i64,) = sqlx::query_as("SELECT COUNT(*) FROM discovery_backtests")
