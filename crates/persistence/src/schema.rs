@@ -37,7 +37,16 @@ CREATE INDEX IF NOT EXISTS idx_discovery_hash ON discovery_backtests(params_hash
 CREATE INDEX IF NOT EXISTS idx_discovery_strategy ON discovery_backtests(strategy_type, symbol);
 CREATE INDEX IF NOT EXISTS idx_discovery_score ON discovery_backtests(composite_score DESC);
 CREATE INDEX IF NOT EXISTS idx_discovery_run ON discovery_backtests(discovery_run_id);
-CREATE INDEX IF NOT EXISTS idx_discovery_name_trades ON discovery_backtests(strategy_name, total_trades)
+CREATE INDEX IF NOT EXISTS idx_discovery_name_trades ON discovery_backtests(strategy_name, total_trades);
+
+-- Expression indexes for fast CAST-based sorts (critical with large datasets)
+CREATE INDEX IF NOT EXISTS idx_disc_composite_real ON discovery_backtests(CAST(composite_score AS REAL) DESC);
+CREATE INDEX IF NOT EXISTS idx_disc_win_rate_real ON discovery_backtests(CAST(win_rate AS REAL) DESC);
+CREATE INDEX IF NOT EXISTS idx_disc_net_pnl_real ON discovery_backtests(CAST(net_pnl AS REAL) DESC);
+-- Covering index for top-strategies CTE: PARTITION BY strategy_name ORDER BY win_rate
+CREATE INDEX IF NOT EXISTS idx_disc_name_winrate ON discovery_backtests(strategy_name, CAST(win_rate AS REAL) DESC) WHERE total_trades >= 5;
+CREATE INDEX IF NOT EXISTS idx_disc_name_pnl ON discovery_backtests(strategy_name, CAST(net_pnl AS REAL) DESC) WHERE total_trades >= 5;
+CREATE INDEX IF NOT EXISTS idx_disc_name_score ON discovery_backtests(strategy_name, CAST(composite_score AS REAL) DESC) WHERE total_trades >= 5
 "#;
 
 /// SQL migrations to add new columns (idempotent — ignores "duplicate column" errors)
