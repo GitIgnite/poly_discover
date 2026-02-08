@@ -159,3 +159,23 @@ export async function getBinanceKlines(symbol, interval, startTime, endTime) {
     return { success: false, message: String(e) };
   }
 }
+
+// ============================================================================
+// Leaderboard
+// ============================================================================
+
+export async function startLeaderboardAnalysis() {
+  try {
+    return await apiCall('/api/leaderboard', { method: 'POST' });
+  } catch (e) {
+    return { success: false, message: String(e) };
+  }
+}
+
+export async function getLeaderboardStatus() {
+  try {
+    return await apiCall('/api/leaderboard/status');
+  } catch (e) {
+    return { status: 'Error', progress_pct: 0, results: [] };
+  }
+}

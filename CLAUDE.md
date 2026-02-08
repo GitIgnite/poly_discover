@@ -37,7 +37,7 @@ Le dossier `docs/` contient la documentation essentielle du projet. **Consulter 
 ```bash
 cargo build                          # Debug build
 cargo build --release                # Release build
-cargo test --all                     # Run all workspace tests (53 tests)
+cargo test --all                     # Run all workspace tests (59 tests)
 cargo test -p engine                 # Tests for engine crate only
 cargo run -- serve --port 3001       # Start web server
 cargo run -- run --symbols BTCUSDT   # Run discovery headless (CLI mode, default 365 days)
@@ -76,7 +76,9 @@ crates/
 - `optimizer.rs` — Grid-search parameter optimization (supports all 11 strategies)
 - `fees.rs` — Polymarket taker fee formula (unit tested)
 - `gabagool.rs` — Binary arbitrage backtest on synthetic Polymarket-style markets
+- `leaderboard.rs` — Leaderboard analyzer: fetch top traders, compute metrics, infer strategies
 - `api/binance.rs` — Binance public klines API client
+- `api/polymarket.rs` — Polymarket Data API client (leaderboard, positions, trades, portfolio value)
 
 **persistence** has a single table `discovery_backtests` (30 columns) with a `params_hash` (SHA256) uniqueness constraint. WAL mode, 5-connection pool. Migrations are idempotent (ALTER TABLE tolerates "duplicate column name").
 
@@ -87,14 +89,15 @@ crates/
 ```
 src/
 ├── App.svelte              Page router + global discovery polling (every 30s)
-├── lib/api.js              All backend HTTP calls (discover, cancel, knowledge, top-strategies, optimize, binance)
+├── lib/api.js              All backend HTTP calls (discover, cancel, knowledge, top-strategies, optimize, binance, leaderboard)
 ├── lib/stores.js           Svelte writable stores (currentPage, serverHealth, discoveryStatus)
 ├── pages/
 │   ├── Discovery.svelte    Start/Stop button, reads global discoveryStatus store
 │   ├── TopStrategies.svelte Top 20 unique strategies by win rate, podium, auto-refresh
 │   ├── Playbook.svelte     Top 3 by win rate — Polymarket params + bot implementation guide (FR)
 │   ├── KnowledgeBase.svelte Auto-refresh when discovery running, LIVE badge
-│   └── Optimizer.svelte    Parameter optimization UI
+│   ├── Optimizer.svelte    Parameter optimization UI
+│   └── Leaderboard.svelte  Polymarket top traders analysis + strategy inference
 └── components/
     ├── Layout.svelte       Main layout wrapper
     └── Sidebar.svelte      Navigation + discovery running indicator (pulse dot + counter)
@@ -111,7 +114,7 @@ Le statut discovery est géré au niveau **App.svelte** (pas dans Discovery.svel
 - **TopStrategies.svelte** : top 20 dédupliqué par `strategy_name`, auto-refresh 60s, podium top 3, badge LIVE
 - **Playbook.svelte** : top 3 par win rate (via `getTopStrategies(3, 'win_rate')`), tableau "Paramètres essentiels Polymarket" + "Guide d'implémentation bot" ultra-détaillé (7 sections en FR), bouton Copy
 - **KnowledgeBase.svelte** : auto-refresh toutes les 60s quand `$discoveryStatus.running === true`, badge LIVE
-- **Sidebar.svelte** : pulse dot animé + compteur quand discovery tourne (6 nav items: Discovery, Top 20, Playbook, Knowledge Base, Optimizer)
+- **Sidebar.svelte** : pulse dot animé + compteur quand discovery tourne (7 nav items: Discovery, Top 20, Playbook, Knowledge Base, Optimizer, Leaderboard)
 
 ## Strategy Catalog
 
@@ -272,6 +275,8 @@ Le système utilise une estimation dynamique de probabilité basée sur le chang
 | GET | `/api/knowledge/stats` | Aggregated statistics |
 | GET | `/api/export` | Export results as JSON |
 | GET | `/api/binance/klines` | Proxy to Binance API |
+| POST | `/api/leaderboard` | Start leaderboard analysis (top 10 traders) |
+| GET | `/api/leaderboard/status` | Poll leaderboard analysis progress + results |
 
 ## Testing
 
@@ -282,14 +287,16 @@ Unit tests exist in:
 - `crates/engine/src/optimizer.rs` — 8 tests for grid generation, scoring
 - `crates/engine/src/gabagool.rs` — 7 tests for arbitrage engine
 - `crates/engine/src/engine.rs` — 2 tests for backtest engine
+- `crates/engine/src/leaderboard.rs` — 6 tests for metrics computation and strategy inference
 
 ```bash
-cargo test --all                     # Run all 53 tests
+cargo test --all                     # Run all 59 tests
 cargo test -p engine -- fees         # Run fee-specific tests
 cargo test -p engine -- discovery    # Run discovery tests
 cargo test -p engine -- indicators   # Run indicator tests
 cargo test -p engine -- ml_guided    # Run ML-guided exploration tests
 cargo test -p engine -- dynamic_combo # Run DynamicCombo tests
+cargo test -p engine -- leaderboard  # Run leaderboard analyzer tests
 ```
 
 ## Déploiement AWS
@@ -359,6 +366,46 @@ Ports à ouvrir dans le Security Group EC2 :
 | 4000 | poly-discover |
 
 ## Historique des changements récents
+
+### Leaderboard Analyzer — Analyse des top traders Polymarket (2026-02-08)
+
+**Nouvelle feature** : page d'analyse du leaderboard Polymarket. Récupère les top 10 traders, analyse leurs positions et trades, puis infère leur stratégie (Momentum, Contrarian, Scalper, Market Maker, Arbitrage, Event-Driven, High Conviction, Diversified, Mixed).
+
+**Nouveaux fichiers (3) :**
+- `crates/engine/src/api/polymarket.rs` — Client HTTP Polymarket Data API (`data-api.polymarket.com`), structs de désérialisation (`LeaderboardEntry`, `TraderPosition`, `TraderTrade`, `TraderValue`), méthodes `get_leaderboard()`, `get_positions()`, `get_trades()`, `get_value()`
+- `crates/engine/src/leaderboard.rs` — Moteur d'analyse : `InferredStrategy` enum (9 variants), `TraderMetrics`, `StrategySignal`, `TraderAnalysis`, `LeaderboardProgress`/`LeaderboardStatus` (même pattern que `DiscoveryProgress`), fonctions `compute_metrics()`, `infer_strategy()`, `analyze_leaderboard()`, 6 tests unitaires
+- `src/pages/Leaderboard.svelte` — Page frontend : bouton "Analyze Top 10", barre de progression (polling 2s), cards expandables par trader (rang, nom, PnL, volume, stratégies avec confidence bars, grille de métriques, top 5 positions, 10 derniers trades), couleurs par stratégie
+
+**Fichiers modifiés (6) :**
+- `crates/engine/src/api/mod.rs` — Ajout `pub mod polymarket` + re-export `PolymarketDataClient`
+- `crates/engine/src/lib.rs` — Ajout `pub mod leaderboard` + re-exports (`PolymarketDataClient`, `analyze_leaderboard`, `LeaderboardProgress`, `LeaderboardStatus`, `TraderAnalysis`)
+- `crates/server/src/main.rs` — `AppState` : +`polymarket` (PolymarketDataClient) et +`leaderboard_progress` (LeaderboardProgress). 2 nouveaux endpoints : `POST /api/leaderboard` (spawn background task) + `GET /api/leaderboard/status` (progress + résultats)
+- `src/lib/api.js` — +`startLeaderboardAnalysis()` et `getLeaderboardStatus()`
+- `src/App.svelte` — Import `Leaderboard` + route `leaderboard`
+- `src/components/Sidebar.svelte` — Import `Crown` de lucide-svelte, nouvel item "Leaderboard" (couleur rose), ajout `rose` dans `colorMap`
+
+**Règles d'inférence de stratégie :**
+
+| Stratégie | Condition |
+|-----------|-----------|
+| Market Maker | BUY+SELL sur même conditionId (ratio > 0.3) |
+| Scalper | trade_frequency > 20/jour, petites positions |
+| Contrarian | avg_entry < 0.30 |
+| Momentum | avg_entry > 0.55 |
+| Arbitrage | Trades sur même event, différents conditions |
+| Event-Driven | > 60% des trades dans < 20% du temps |
+| High Conviction | < 10 marchés, concentration top 3 > 60% |
+| Diversified | > 50 marchés, concentration top 3 < 20% |
+
+**Tests : 59 total (+6 nouveaux)** — `test_compute_metrics_empty`, `test_infer_strategy_insufficient_data`, `test_infer_contrarian`, `test_infer_momentum`, `test_infer_market_maker`, `test_infer_high_conviction`
+
+**Notes techniques :**
+- API publique, aucune authentification requise
+- Rate limiting : 200ms entre chaque requête (3 requêtes par trader × 10 traders ≈ 10s)
+- Pas de persistence DB : résultats en mémoire (`LeaderboardProgress`), analyse à la demande
+- Serde `rename_all = "camelCase"` pour les réponses API Polymarket
+
+---
 
 ### Dynamic Combo Discovery — Exploration de combinaisons d'indicateurs 2/3/4 (2026-02-08)
 

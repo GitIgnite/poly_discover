@@ -6,6 +6,7 @@
   import Optimizer from './pages/Optimizer.svelte';
   import TopStrategies from './pages/TopStrategies.svelte';
   import Playbook from './pages/Playbook.svelte';
+  import Leaderboard from './pages/Leaderboard.svelte';
   import { currentPage, serverHealth, discoveryStatus } from './lib/stores.js';
   import { checkHealth, getDiscoveryStatus } from './lib/api.js';
 
@@ -61,5 +62,7 @@
     <Playbook />
   {:else if $currentPage === 'optimizer'}
     <Optimizer />
+  {:else if $currentPage === 'leaderboard'}
+    <Leaderboard />
   {/if}
 </Layout>

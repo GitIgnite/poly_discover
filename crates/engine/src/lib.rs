@@ -13,12 +13,15 @@ pub mod engine;
 pub mod fees;
 pub mod gabagool;
 pub mod indicators;
+pub mod leaderboard;
 pub mod optimizer;
 pub mod strategy;
 pub mod types;
 
 // Re-exports for convenience
 pub use api::BinanceClient;
+pub use api::PolymarketDataClient;
+pub use leaderboard::{analyze_leaderboard, LeaderboardProgress, LeaderboardStatus, TraderAnalysis};
 pub use discovery::{
     run_continuous_discovery, run_discovery, DiscoveryProgress, DiscoveryRequest, DiscoveryResult,
     DiscoveryStatus, DiscoveryStrategyType, SizingMode,

@@ -14,9 +14,10 @@ use axum::{
 use chrono::Utc;
 use clap::{Parser, Subcommand};
 use engine::{
-    run_continuous_discovery, run_discovery, run_optimization, BinanceClient, DiscoveryProgress,
-    DiscoveryRequest, DiscoveryResult, DiscoveryStatus, OptimizeProgress, OptimizeRequest,
-    OptimizeStatus, SizingMode,
+    analyze_leaderboard, run_continuous_discovery, run_discovery, run_optimization, BinanceClient,
+    DiscoveryProgress, DiscoveryRequest, DiscoveryResult, DiscoveryStatus, LeaderboardProgress,
+    OptimizeProgress, OptimizeRequest, OptimizeStatus, PolymarketDataClient,
+    SizingMode,
 };
 use persistence::repository::DiscoveryRepository;
 use rust_decimal::Decimal;
@@ -73,14 +74,22 @@ enum Commands {
         #[arg(long)]
         continuous: bool,
     },
+    /// Cleanup DB: keep top N best results per strategy (positive PnL only), delete the rest
+    Cleanup {
+        /// Number of best results to keep per strategy_name (default 3)
+        #[arg(long, default_value_t = 3)]
+        keep: i64,
+    },
 }
 
 #[derive(Clone)]
 struct AppState {
     binance: Arc<BinanceClient>,
+    polymarket: Arc<PolymarketDataClient>,
     db: Arc<persistence::Database>,
     discovery_progress: Arc<DiscoveryProgress>,
     optimize_progress: Arc<OptimizeProgress>,
+    leaderboard_progress: Arc<LeaderboardProgress>,
 }
 
 fn init_logging(verbose: bool) {
@@ -126,6 +135,9 @@ async fn main() -> anyhow::Result<()> {
         } => {
             cmd_run(symbols, days, top_n, sizing, export, continuous).await?;
         }
+        Commands::Cleanup { keep } => {
+            cmd_cleanup(keep).await?;
+        }
     }
 
     Ok(())
@@ -148,9 +160,11 @@ async fn cmd_serve(host: &str, port: u16) -> anyhow::Result<()> {
 
     let state = AppState {
         binance: Arc::new(BinanceClient::new()),
+        polymarket: Arc::new(PolymarketDataClient::new()),
         db: Arc::new(db),
         discovery_progress: Arc::new(DiscoveryProgress::new()),
         optimize_progress: Arc::new(OptimizeProgress::new()),
+        leaderboard_progress: Arc::new(LeaderboardProgress::new()),
     };
 
     let cors = CorsLayer::new()
@@ -180,6 +194,8 @@ async fn cmd_serve(host: &str, port: u16) -> anyhow::Result<()> {
         .route("/optimize", post(api_start_optimization))
         .route("/optimize/status", get(api_optimize_status))
         .route("/binance/klines", get(api_binance_klines))
+        .route("/leaderboard", post(api_analyze_leaderboard))
+        .route("/leaderboard/status", get(api_leaderboard_status))
         .with_state(state);
 
     let app = Router::new()
@@ -203,6 +219,8 @@ async fn cmd_serve(host: &str, port: u16) -> anyhow::Result<()> {
     println!("  POST /api/optimize            - Start parameter optimization");
     println!("  GET  /api/optimize/status     - Poll optimization progress");
     println!("  GET  /api/binance/klines      - Fetch Binance klines (proxy)");
+    println!("  POST /api/leaderboard         - Analyze top Polymarket traders");
+    println!("  GET  /api/leaderboard/status  - Poll leaderboard analysis progress");
     println!("\n  Database: {}", db_path);
     println!("\nPress Ctrl+C to stop\n");
 
@@ -905,6 +923,64 @@ async fn api_export(
 }
 
 // ============================================================================
+// API Handlers — Leaderboard
+// ============================================================================
+
+/// POST /api/leaderboard — start leaderboard analysis
+async fn api_analyze_leaderboard(
+    State(state): State<AppState>,
+) -> Result<Json<serde_json::Value>, StatusCode> {
+    if state.leaderboard_progress.is_running() {
+        return Ok(Json(serde_json::json!({
+            "success": false,
+            "message": "Leaderboard analysis already running",
+        })));
+    }
+
+    info!("Starting leaderboard analysis");
+    state.leaderboard_progress.reset();
+
+    let client = state.polymarket.clone();
+    let progress = state.leaderboard_progress.clone();
+
+    tokio::spawn(async move {
+        analyze_leaderboard(&client, &progress, 10).await;
+    });
+
+    Ok(Json(serde_json::json!({
+        "success": true,
+        "message": "Leaderboard analysis started",
+    })))
+}
+
+/// GET /api/leaderboard/status — poll leaderboard analysis progress
+async fn api_leaderboard_status(State(state): State<AppState>) -> Json<serde_json::Value> {
+    let progress = &state.leaderboard_progress;
+    let status = *progress.status.read().unwrap();
+    let total = progress.total_traders.load(std::sync::atomic::Ordering::Relaxed);
+    let analyzed = progress.analyzed.load(std::sync::atomic::Ordering::Relaxed);
+    let current_trader = progress.current_trader.read().unwrap().clone();
+    let results = progress.results.read().unwrap().clone();
+    let error = progress.error_message.read().unwrap().clone();
+
+    let progress_pct = if total > 0 {
+        (analyzed as f64 / total as f64 * 100.0).round()
+    } else {
+        0.0
+    };
+
+    Json(serde_json::json!({
+        "status": status,
+        "total_traders": total,
+        "analyzed": analyzed,
+        "progress_pct": progress_pct,
+        "current_trader": current_trader,
+        "results": results,
+        "error": error,
+    }))
+}
+
+// ============================================================================
 // Helpers
 // ============================================================================
 
@@ -964,4 +1040,33 @@ fn build_export_json(
         },
         "results": items,
     })
+}
+
+// ============================================================================
+// Cleanup command — keep top N per strategy, delete the rest
+// ============================================================================
+
+async fn cmd_cleanup(keep: i64) -> anyhow::Result<()> {
+    info!("Poly-Discover DB cleanup — keeping top {} per strategy (positive PnL only)", keep);
+
+    let db_path =
+        std::env::var("POLY_DISCOVERY_DB_PATH").unwrap_or_else(|_| "data/discovery.db".to_string());
+    let db = persistence::Database::new(&db_path).await.map_err(|e| {
+        error!("Failed to initialize database: {}", e);
+        anyhow::anyhow!("Database initialization failed: {}", e)
+    })?;
+    info!("Database opened: {}", db_path);
+
+    let repo = DiscoveryRepository::new(db.pool());
+    let (deleted, remaining) = repo.cleanup_keep_top_n(keep).await.map_err(|e| {
+        anyhow::anyhow!("Cleanup failed: {}", e)
+    })?;
+
+    info!("Running VACUUM to reclaim disk space...");
+    repo.vacuum().await.map_err(|e| {
+        anyhow::anyhow!("VACUUM failed: {}", e)
+    })?;
+
+    info!("Done! Deleted {} records, {} remaining.", deleted, remaining);
+    Ok(())
 }
