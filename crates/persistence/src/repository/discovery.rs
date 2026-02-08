@@ -288,22 +288,24 @@ impl<'a> DiscoveryRepository<'a> {
 
         let sql = format!(
             r#"
-            WITH ranked AS (
-              SELECT *,
+            WITH best_ids AS (
+              SELECT id,
                 ROW_NUMBER() OVER (PARTITION BY strategy_name ORDER BY {order_col} DESC) as rn
               FROM discovery_backtests
               WHERE total_trades >= 5
             )
-            SELECT id, params_hash, strategy_type, strategy_name, strategy_params,
-                   symbol, days, sizing_mode,
-                   composite_score, net_pnl, gross_pnl, total_fees,
-                   win_rate, total_trades, sharpe_ratio, max_drawdown_pct,
-                   profit_factor, avg_trade_pnl,
-                   hit_rate, avg_locked_profit,
-                   discovery_run_id, phase,
-                   sortino_ratio, max_consecutive_losses, avg_win_pnl, avg_loss_pnl,
-                   total_volume, annualized_return_pct, annualized_sharpe, strategy_confidence
-            FROM ranked WHERE rn = 1
+            SELECT d.id, d.params_hash, d.strategy_type, d.strategy_name, d.strategy_params,
+                   d.symbol, d.days, d.sizing_mode,
+                   d.composite_score, d.net_pnl, d.gross_pnl, d.total_fees,
+                   d.win_rate, d.total_trades, d.sharpe_ratio, d.max_drawdown_pct,
+                   d.profit_factor, d.avg_trade_pnl,
+                   d.hit_rate, d.avg_locked_profit,
+                   d.discovery_run_id, d.phase,
+                   d.sortino_ratio, d.max_consecutive_losses, d.avg_win_pnl, d.avg_loss_pnl,
+                   d.total_volume, d.annualized_return_pct, d.annualized_sharpe, d.strategy_confidence
+            FROM best_ids b
+            JOIN discovery_backtests d ON d.id = b.id
+            WHERE b.rn = 1
             ORDER BY {order_col} DESC
             LIMIT ?
             "#

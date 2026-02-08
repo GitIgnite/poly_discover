@@ -36,7 +36,8 @@ CREATE TABLE IF NOT EXISTS discovery_backtests (
 CREATE INDEX IF NOT EXISTS idx_discovery_hash ON discovery_backtests(params_hash);
 CREATE INDEX IF NOT EXISTS idx_discovery_strategy ON discovery_backtests(strategy_type, symbol);
 CREATE INDEX IF NOT EXISTS idx_discovery_score ON discovery_backtests(composite_score DESC);
-CREATE INDEX IF NOT EXISTS idx_discovery_run ON discovery_backtests(discovery_run_id)
+CREATE INDEX IF NOT EXISTS idx_discovery_run ON discovery_backtests(discovery_run_id);
+CREATE INDEX IF NOT EXISTS idx_discovery_name_trades ON discovery_backtests(strategy_name, total_trades)
 "#;
 
 /// SQL migrations to add new columns (idempotent — ignores "duplicate column" errors)
