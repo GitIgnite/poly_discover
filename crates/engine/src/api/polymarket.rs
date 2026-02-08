@@ -22,7 +22,7 @@ pub struct PolymarketDataClient {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct LeaderboardEntry {
-    pub rank: Option<i64>,
+    pub rank: Option<String>,
     pub proxy_wallet: Option<String>,
     pub user_name: Option<String>,
     pub vol: Option<f64>,
@@ -30,12 +30,6 @@ pub struct LeaderboardEntry {
     pub profile_image: Option<String>,
     pub x_username: Option<String>,
     pub verified_badge: Option<bool>,
-}
-
-/// Wrapper: the leaderboard endpoint returns `{ "leaderboard": [...] }`
-#[derive(Debug, Deserialize)]
-struct LeaderboardResponse {
-    leaderboard: Vec<LeaderboardEntry>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -65,17 +59,18 @@ pub struct TraderTrade {
     pub condition_id: Option<String>,
     pub size: Option<f64>,
     pub price: Option<f64>,
-    pub timestamp: Option<String>,
+    pub timestamp: Option<f64>,
     pub title: Option<String>,
     pub slug: Option<String>,
     pub event_slug: Option<String>,
     pub outcome: Option<String>,
-    pub outcome_index: Option<String>,
+    pub outcome_index: Option<f64>,
     pub transaction_hash: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct TraderValue {
+    pub user: Option<String>,
     pub value: Option<f64>,
 }
 
@@ -114,9 +109,9 @@ impl PolymarketDataClient {
             anyhow::bail!("Polymarket leaderboard error {}: {}", status, body);
         }
 
-        let wrapper: LeaderboardResponse = resp.json().await?;
-        debug!(count = wrapper.leaderboard.len(), "Leaderboard fetched");
-        Ok(wrapper.leaderboard)
+        let entries: Vec<LeaderboardEntry> = resp.json().await?;
+        debug!(count = entries.len(), "Leaderboard fetched");
+        Ok(entries)
     }
 
     /// GET /positions?user={address} — trader positions
@@ -171,7 +166,7 @@ impl PolymarketDataClient {
             anyhow::bail!("Polymarket value error {}: {}", status, body);
         }
 
-        let value: TraderValue = resp.json().await?;
-        Ok(value)
+        let values: Vec<TraderValue> = resp.json().await?;
+        Ok(values.into_iter().next().unwrap_or(TraderValue { user: None, value: None }))
     }
 }

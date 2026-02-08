@@ -242,17 +242,11 @@ pub fn compute_metrics(positions: &[TraderPosition], trades: &[TraderTrade]) -> 
         0.0
     };
 
-    // Time span (from trade timestamps)
+    // Time span (from trade timestamps — epoch seconds as f64)
     let timestamps: Vec<i64> = trades
         .iter()
-        .filter_map(|t| t.timestamp.as_ref())
-        .filter_map(|ts| {
-            // Try parsing as ISO 8601 or as epoch millis
-            chrono::DateTime::parse_from_rfc3339(ts)
-                .map(|d| d.timestamp())
-                .ok()
-                .or_else(|| ts.parse::<i64>().ok())
-        })
+        .filter_map(|t| t.timestamp)
+        .map(|ts| ts as i64)
         .collect();
     let time_span_days = if timestamps.len() >= 2 {
         let min_ts = timestamps.iter().min().unwrap();
@@ -565,7 +559,7 @@ pub async fn analyze_leaderboard(
         let wallet = match &entry.proxy_wallet {
             Some(w) => w.clone(),
             None => {
-                warn!(rank = entry.rank, "Skipping trader with no wallet");
+                warn!(rank = ?entry.rank, "Skipping trader with no wallet");
                 progress.analyzed.fetch_add(1, Ordering::Relaxed);
                 continue;
             }
@@ -573,7 +567,7 @@ pub async fn analyze_leaderboard(
 
         let name = entry.user_name.clone().unwrap_or_else(|| format!("Trader #{}", i + 1));
         *progress.current_trader.write().unwrap() = name.clone();
-        info!(rank = entry.rank, name = %name, "Analyzing trader");
+        info!(rank = ?entry.rank, name = %name, "Analyzing trader");
 
         // Fetch positions
         let positions = match client.get_positions(&wallet).await {
@@ -648,7 +642,7 @@ mod tests {
     use super::*;
     use crate::api::polymarket::{TraderPosition, TraderTrade};
 
-    fn make_trade(side: &str, price: f64, condition_id: &str, event_slug: &str, ts: &str) -> TraderTrade {
+    fn make_trade(side: &str, price: f64, condition_id: &str, event_slug: &str, ts: f64) -> TraderTrade {
         TraderTrade {
             proxy_wallet: Some("0xabc".into()),
             side: Some(side.into()),
@@ -656,12 +650,12 @@ mod tests {
             condition_id: Some(condition_id.into()),
             size: Some(50.0),
             price: Some(price),
-            timestamp: Some(ts.into()),
+            timestamp: Some(ts),
             title: Some("Test Market".into()),
             slug: Some("test-market".into()),
             event_slug: Some(event_slug.into()),
             outcome: Some("Yes".into()),
-            outcome_index: Some("0".into()),
+            outcome_index: Some(0.0),
             transaction_hash: Some("0x123".into()),
         }
     }
@@ -703,7 +697,7 @@ mod tests {
     fn test_infer_contrarian() {
         // Trader buys at very low prices
         let trades: Vec<TraderTrade> = (0..20)
-            .map(|i| make_trade("BUY", 0.15, &format!("cid{}", i), &format!("evt{}", i), &format!("{}", 1700000000 + i * 86400)))
+            .map(|i| make_trade("BUY", 0.15, &format!("cid{}", i), &format!("evt{}", i), (1700000000 + i * 86400) as f64))
             .collect();
         let positions: Vec<TraderPosition> = (0..10)
             .map(|i| make_position(&format!("cid{}", i), 50.0, 100.0, 0.15))
@@ -718,7 +712,7 @@ mod tests {
     fn test_infer_momentum() {
         // Trader buys at high prices
         let trades: Vec<TraderTrade> = (0..20)
-            .map(|i| make_trade("BUY", 0.80, &format!("cid{}", i), &format!("evt{}", i), &format!("{}", 1700000000 + i * 86400)))
+            .map(|i| make_trade("BUY", 0.80, &format!("cid{}", i), &format!("evt{}", i), (1700000000 + i * 86400) as f64))
             .collect();
         let positions: Vec<TraderPosition> = (0..10)
             .map(|i| make_position(&format!("cid{}", i), 30.0, 100.0, 0.80))
@@ -736,8 +730,8 @@ mod tests {
         for i in 0..10 {
             let cid = format!("cid{}", i);
             let evt = format!("evt{}", i);
-            trades.push(make_trade("BUY", 0.45, &cid, &evt, &format!("{}", 1700000000 + i * 3600)));
-            trades.push(make_trade("SELL", 0.55, &cid, &evt, &format!("{}", 1700000000 + i * 3600 + 60)));
+            trades.push(make_trade("BUY", 0.45, &cid, &evt, (1700000000 + i * 3600) as f64));
+            trades.push(make_trade("SELL", 0.55, &cid, &evt, (1700000000 + i * 3600 + 60) as f64));
         }
         let positions: Vec<TraderPosition> = (0..5)
             .map(|i| make_position(&format!("cid{}", i), 10.0, 50.0, 0.45))
@@ -758,7 +752,7 @@ mod tests {
             make_position("cid3", 100.0, 200.0, 0.50),
         ];
         let trades: Vec<TraderTrade> = (0..6)
-            .map(|i| make_trade("BUY", 0.50, &format!("cid{}", (i % 3) + 1), &format!("evt{}", (i % 3) + 1), &format!("{}", 1700000000 + i * 86400)))
+            .map(|i| make_trade("BUY", 0.50, &format!("cid{}", (i % 3) + 1), &format!("evt{}", (i % 3) + 1), (1700000000 + i * 86400) as f64))
             .collect();
         let metrics = compute_metrics(&positions, &trades);
         assert!(metrics.unique_markets < 10);
