@@ -37,7 +37,7 @@ Le dossier `docs/` contient la documentation essentielle du projet. **Consulter 
 ```bash
 cargo build                          # Debug build
 cargo build --release                # Release build
-cargo test --all                     # Run all workspace tests (59 tests)
+cargo test --all                     # Run all workspace tests (67 tests)
 cargo test -p engine                 # Tests for engine crate only
 cargo run -- serve --port 3001       # Start web server
 cargo run -- run --symbols BTCUSDT   # Run discovery headless (CLI mode, default 365 days)
@@ -76,11 +76,13 @@ crates/
 - `optimizer.rs` — Grid-search parameter optimization (supports all 11 strategies)
 - `fees.rs` — Polymarket taker fee formula (unit tested)
 - `gabagool.rs` — Binary arbitrage backtest on synthetic Polymarket-style markets
-- `leaderboard.rs` — Leaderboard analyzer: fetch top traders, compute metrics, infer strategies
+- `leaderboard.rs` — Leaderboard analyzer: fetch top traders, compute metrics, infer strategies, persist to DB
+- `watcher.rs` — Trade watcher: polls top trader wallets every 15s for new trades, generates alerts
+- `web_strategies.rs` — Web-researched Polymarket strategies: static catalogue (12 entries), 5 backtestable SignalGenerators, param variants
 - `api/binance.rs` — Binance public klines API client
 - `api/polymarket.rs` — Polymarket Data API client (leaderboard, positions, trades, portfolio value)
 
-**persistence** has a single table `discovery_backtests` (30 columns) with a `params_hash` (SHA256) uniqueness constraint. WAL mode, 5-connection pool. Migrations are idempotent (ALTER TABLE tolerates "duplicate column name").
+**persistence** has 3 tables: `discovery_backtests` (30 columns), `leaderboard_traders` (17 columns), `trader_trades` (15 columns). WAL mode, 5-connection pool. Migrations are idempotent (ALTER TABLE tolerates "duplicate column name"). Two repositories: `DiscoveryRepository` and `LeaderboardRepository`.
 
 **server** exposes REST endpoints and a CLI with two subcommands: `serve` (web server) and `run` (headless discovery).
 
@@ -89,7 +91,7 @@ crates/
 ```
 src/
 ├── App.svelte              Page router + global discovery polling (every 30s)
-├── lib/api.js              All backend HTTP calls (discover, cancel, knowledge, top-strategies, optimize, binance, leaderboard)
+├── lib/api.js              All backend HTTP calls (discover, cancel, knowledge, top-strategies, optimize, binance, leaderboard, watcher, strategies-catalog)
 ├── lib/stores.js           Svelte writable stores (currentPage, serverHealth, discoveryStatus)
 ├── pages/
 │   ├── Discovery.svelte    Start/Stop button, reads global discoveryStatus store
@@ -97,7 +99,8 @@ src/
 │   ├── Playbook.svelte     Top 3 by win rate — Polymarket params + bot implementation guide (FR)
 │   ├── KnowledgeBase.svelte Auto-refresh when discovery running, LIVE badge
 │   ├── Optimizer.svelte    Parameter optimization UI
-│   └── Leaderboard.svelte  Polymarket top traders analysis + strategy inference
+│   ├── Leaderboard.svelte  Polymarket top traders analysis + strategy inference + trade watcher
+│   └── StrategyResearch.svelte  Web-researched Polymarket strategies catalog (12 strategies, filterable)
 └── components/
     ├── Layout.svelte       Main layout wrapper
     └── Sidebar.svelte      Navigation + discovery running indicator (pulse dot + counter)
@@ -114,7 +117,7 @@ Le statut discovery est géré au niveau **App.svelte** (pas dans Discovery.svel
 - **TopStrategies.svelte** : top 20 dédupliqué par `strategy_name`, auto-refresh 60s, podium top 3, badge LIVE
 - **Playbook.svelte** : top 3 par win rate (via `getTopStrategies(3, 'win_rate')`), tableau "Paramètres essentiels Polymarket" + "Guide d'implémentation bot" ultra-détaillé (7 sections en FR), bouton Copy
 - **KnowledgeBase.svelte** : auto-refresh toutes les 60s quand `$discoveryStatus.running === true`, badge LIVE
-- **Sidebar.svelte** : pulse dot animé + compteur quand discovery tourne (7 nav items: Discovery, Top 20, Playbook, Knowledge Base, Optimizer, Leaderboard)
+- **Sidebar.svelte** : pulse dot animé + compteur quand discovery tourne (8 nav items: Discovery, Top 20, Playbook, Knowledge Base, Optimizer, Leaderboard, Strategies Web)
 
 ## Strategy Catalog
 
@@ -179,6 +182,23 @@ Le système explore dynamiquement **toutes les combinaisons** possibles des 10 i
 - Cycle 1 : quads avec Unanimous + PrimaryConfirmed + aggressive params
 - Cycle 2 : mixed params (aggressive A + conservative B) + random combos
 - Cycle 3+ : ML-guided evolutionary (60% mutation, 20% crossover, 20% random)
+
+### Web-Researched Polymarket Strategies (5 backtestable + 7 display-only)
+
+| # | Strategy | Category | Logic | Backtestable |
+|---|----------|----------|-------|-------------|
+| 1 | ProbabilityEdge | edge | Composite RSI+momentum+volatility → probability estimate → trade when edge > threshold | Yes |
+| 2 | CatalystMomentum | momentum | Detect price/volume spikes, enter momentum with trailing stop | Yes |
+| 3 | FavoriteCompounder | value | Trade high-probability favorites (price > threshold), accumulate small gains | Yes |
+| 4 | MarketMakingSim | market-making | Simulate market maker: bid/ask around SMA, capture spread | Yes |
+| 5 | MeanReversionPoly | mean-reversion | Fair value (long SMA), trade extreme deviations with mean reversion | Yes |
+| 6 | Arbitrage YES+NO | arbitrage | Requires YES+NO prices simultaneously | No |
+| 7 | Whale Copy-Trading | momentum | Requires on-chain data in real-time | No |
+| 8 | Cross-Market Arbitrage | arbitrage | Requires correlated markets data | No |
+| 9 | Liquidity Provision | market-making | Requires orderbook depth | No |
+| 10 | News Sentiment | edge | Requires news feed + NLP | No |
+| 11 | Calendar Spread | arbitrage | Requires multiple expirations | No |
+| 12 | Contrarian Fade | edge | Requires crowd sentiment data | No |
 
 ### Arbitrage (1)
 
@@ -277,6 +297,11 @@ Le système utilise une estimation dynamique de probabilité basée sur le chang
 | GET | `/api/binance/klines` | Proxy to Binance API |
 | POST | `/api/leaderboard` | Start leaderboard analysis (top 10 traders) |
 | GET | `/api/leaderboard/status` | Poll leaderboard analysis progress + results |
+| GET | `/api/leaderboard/traders` | Get persisted traders from DB |
+| POST | `/api/watcher/start` | Start trade watcher (polls watched wallets) |
+| POST | `/api/watcher/stop` | Stop trade watcher |
+| GET | `/api/watcher/status` | Poll trade watcher status + alerts |
+| GET | `/api/strategies/catalog` | Web-researched strategies catalog (12 entries) |
 
 ## Testing
 
@@ -288,15 +313,17 @@ Unit tests exist in:
 - `crates/engine/src/gabagool.rs` — 7 tests for arbitrage engine
 - `crates/engine/src/engine.rs` — 2 tests for backtest engine
 - `crates/engine/src/leaderboard.rs` — 6 tests for metrics computation and strategy inference
+- `crates/engine/src/web_strategies.rs` — 8 tests for catalogue, signal generators, param variants
 
 ```bash
-cargo test --all                     # Run all 59 tests
+cargo test --all                     # Run all 67 tests
 cargo test -p engine -- fees         # Run fee-specific tests
 cargo test -p engine -- discovery    # Run discovery tests
 cargo test -p engine -- indicators   # Run indicator tests
 cargo test -p engine -- ml_guided    # Run ML-guided exploration tests
 cargo test -p engine -- dynamic_combo # Run DynamicCombo tests
 cargo test -p engine -- leaderboard  # Run leaderboard analyzer tests
+cargo test -p engine -- web_strategies # Run web strategies tests
 ```
 
 ## Déploiement AWS
@@ -366,6 +393,76 @@ Ports à ouvrir dans le Security Group EC2 :
 | 4000 | poly-discover |
 
 ## Historique des changements récents
+
+### Web-Researched Polymarket Strategies (2026-02-09)
+
+**Nouvelle feature** : catalogue statique de 12 strategies specifiques aux marches de prediction Polymarket, decouvertes via recherche internet. 5 sont backtestables (compatibles moteur actuel), 7 sont display-only.
+
+**Nouveau module `crates/engine/src/web_strategies.rs` (~600 lignes) :**
+- `WebStrategyId` enum (5 variants : ProbabilityEdge, CatalystMomentum, FavoriteCompounder, MarketMakingSim, MeanReversionPoly)
+- `WebStrategyParams` enum (5 variants avec params specifiques par strategie)
+- `WebStrategyCatalogEntry` struct + `get_catalog()` → 12 entrees (5 backtestables + 7 display-only)
+- 5 `SignalGenerator` implementations : `ProbabilityEdgeGenerator`, `CatalystMomentumGenerator`, `FavoriteCompounderGenerator`, `MarketMakingSimGenerator`, `MeanReversionPolyGenerator`
+- `build_web_generator(id, params)` : factory function
+- Variantes de parametres : `default_for()`, `aggressive_for()`, `conservative_for()`, `random_for(rng)` par strategie
+- 8 tests unitaires
+
+**Nouveau fichier frontend `src/pages/StrategyResearch.svelte` :**
+- Page catalogue des 12 strategies en cards avec filtre par categorie
+- Sections separees backtestables vs display-only
+- Badges categorie, risk level, backtestable
+- Description FR + rationale pour chaque strategie
+
+**Fichiers modifies (8) :**
+- `crates/engine/src/discovery.rs` — +variant `WebStrategy { id, params }` dans `DiscoveryStrategyType`, `estimate_poly_probability()` rendue publique, +15 entrees dans `generate_phase1_grid()`, +match arms dans `mutate_strategy()`, `crossover_strategies()`, `generate_random_strategies()` (10% WebStrategy), `generate_refinement_grid()`, `result_to_record()`, `name()`
+- `crates/engine/src/indicators.rs` — +match arm WebStrategy dans `build_signal_generator()`, `close_f64()` rendue publique
+- `crates/engine/src/lib.rs` — +`pub mod web_strategies` + re-exports (`WebStrategyId`, `WebStrategyParams`, `WebStrategyCatalogEntry`, `get_catalog`)
+- `crates/server/src/main.rs` — +endpoint `GET /api/strategies/catalog`
+- `src/lib/api.js` — +`getStrategyCatalog()`
+- `src/App.svelte` — +import StrategyResearch + route `strategy-research`
+- `src/components/Sidebar.svelte` — +item "Strategies Web" (icone Globe, couleur sky)
+- `src/pages/KnowledgeBase.svelte` — +`<option value="web_strategy">Web Strategies</option>` dans le filtre
+- `src/pages/Discovery.svelte` — +case `web_strategy` dans `formatDiscoveryParams()`
+- `CLAUDE.md` — documentation complete
+
+**Tests : 67 total (+8 nouveaux)** — `test_catalog_has_12_entries`, `test_catalog_unique_ids`, `test_web_strategy_id_display_names`, `test_probability_edge_produces_signals`, `test_catalyst_momentum_produces_signals`, `test_market_making_sim_produces_signals`, `test_mean_reversion_poly_produces_signals`, `test_param_variants_differ`
+
+---
+
+### Persistence Leaderboard + Trade Watcher (2026-02-09)
+
+**Deux nouvelles features** : persistence des analyses leaderboard en DB + Trade Watcher pour surveiller les trades des top traders en temps réel.
+
+**Partie 1 — Persistence Leaderboard :**
+- **Nouvelle table `leaderboard_traders`** (17 colonnes) : proxy_wallet (UNIQUE), user_name, rank, pnl, volume, portfolio_value, primary_strategy, primary_confidence, strategies_json, metrics_json, top_positions_json, trade_count, unique_markets, win_rate, avg_entry_price, analyzed_at
+- **Nouvelle table `trader_trades`** (15 colonnes) : proxy_wallet, trade_hash (UNIQUE, SHA256 pour déduplications), side, condition_id, asset, size, price, title, outcome, event_slug, timestamp, transaction_hash, alerted (0/1), created_at
+- `analyze_leaderboard()` accepte désormais `db_pool: Option<SqlitePool>` et persiste chaque trader + ses trades en DB après analyse
+- Nouvel endpoint `GET /api/leaderboard/traders` pour lire les traders depuis la DB sans re-analyser
+- Le frontend charge les traders persistés au mount de la page (si pas d'analyse en cours)
+
+**Partie 2 — Trade Watcher :**
+- Nouveau module `crates/engine/src/watcher.rs` : `WatcherProgress`, `WatcherStatus` (Idle/Watching/Error), `TradeAlert`, `run_trade_watcher()`
+- Polling REST toutes les 15s pour chaque wallet surveillé via `GET /trades?user={wallet}`
+- Détection de nouveaux trades par comparaison avec la DB (déduplications par trade_hash SHA256)
+- Alertes in-memory (50 dernières) + trades complets en DB
+- 3 nouveaux endpoints : `POST /api/watcher/start`, `POST /api/watcher/stop`, `GET /api/watcher/status`
+- Frontend : section "Trade Watcher" dans Leaderboard.svelte avec bouton Start/Stop, badge LIVE, feed d'alertes en temps réel (polling 5s)
+
+**Nouveaux fichiers (2) :**
+- `crates/persistence/src/repository/leaderboard.rs` — `LeaderboardTraderRecord`, `TraderTradeRecord`, `LeaderboardRepository` (save_trader_analysis, get_all_traders, get_watched_wallets, save_trades, get_new_trades, mark_alerted, get_unalerted_trades)
+- `crates/engine/src/watcher.rs` — `WatcherStatus`, `WatcherProgress`, `TradeAlert`, `run_trade_watcher()`, `check_new_trades()`
+
+**Fichiers modifiés (8) :**
+- `crates/persistence/src/schema.rs` — +2 CREATE TABLE + 2 indexes
+- `crates/persistence/src/repository/mod.rs` — +`pub mod leaderboard` + re-export
+- `crates/engine/src/leaderboard.rs` — +`db_pool: Option<SqlitePool>` param, +`compute_trade_hash()`, +`trades_to_records()`, +`analysis_to_record()`, persistence après chaque trader
+- `crates/engine/src/lib.rs` — +`pub mod watcher` + re-exports (WatcherProgress, WatcherStatus, TradeAlert, run_trade_watcher)
+- `crates/server/src/main.rs` — +`WatcherProgress` dans AppState, +4 endpoints (watcher/start, watcher/stop, watcher/status, leaderboard/traders), passage db_pool à analyze_leaderboard
+- `src/lib/api.js` — +`getLeaderboardTraders()`, +`startWatcher()`, +`stopWatcher()`, +`getWatcherStatus()`
+- `src/pages/Leaderboard.svelte` — chargement des traders depuis DB au mount, section Trade Watcher (Start/Stop, LIVE badge, feed d'alertes avec timestamp)
+- `CLAUDE.md` — documentation complète
+
+---
 
 ### Leaderboard Analyzer — Analyse des top traders Polymarket (2026-02-08)
 

@@ -179,3 +179,51 @@ export async function getLeaderboardStatus() {
     return { status: 'Error', progress_pct: 0, results: [] };
   }
 }
+
+export async function getLeaderboardTraders() {
+  try {
+    return await apiCall('/api/leaderboard/traders');
+  } catch (e) {
+    return { success: false, data: [], total: 0, error: String(e) };
+  }
+}
+
+// ============================================================================
+// Strategies Catalog
+// ============================================================================
+
+export async function getStrategyCatalog() {
+  try {
+    return await apiCall('/api/strategies/catalog');
+  } catch (e) {
+    return { success: false, data: [], total: 0, error: String(e) };
+  }
+}
+
+// ============================================================================
+// Trade Watcher
+// ============================================================================
+
+export async function startWatcher() {
+  try {
+    return await apiCall('/api/watcher/start', { method: 'POST' });
+  } catch (e) {
+    return { success: false, message: String(e) };
+  }
+}
+
+export async function stopWatcher() {
+  try {
+    return await apiCall('/api/watcher/stop', { method: 'POST' });
+  } catch (e) {
+    return { success: false, message: String(e) };
+  }
+}
+
+export async function getWatcherStatus() {
+  try {
+    return await apiCall('/api/watcher/status');
+  } catch (e) {
+    return { status: 'Error', alerts: [], watched_count: 0 };
+  }
+}

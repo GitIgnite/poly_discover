@@ -6,7 +6,10 @@
 use crate::api::polymarket::{
     LeaderboardEntry, PolymarketDataClient, TraderPosition, TraderTrade,
 };
+use persistence::repository::leaderboard::{LeaderboardTraderRecord, TraderTradeRecord};
+use persistence::SqlitePool;
 use serde::Serialize;
+use sha2::{Digest, Sha256};
 use std::collections::{HashMap, HashSet};
 use std::sync::atomic::{AtomicBool, AtomicU32, Ordering};
 use std::sync::RwLock;
@@ -523,11 +526,75 @@ fn detect_arbitrage_pattern(trades: &[TraderTrade]) -> f64 {
 // Orchestrator
 // ---------------------------------------------------------------------------
 
+/// Compute a deduplication hash for a trade
+fn compute_trade_hash(wallet: &str, trade: &TraderTrade) -> String {
+    let mut hasher = Sha256::new();
+    hasher.update(wallet.as_bytes());
+    hasher.update(trade.condition_id.as_deref().unwrap_or("").as_bytes());
+    hasher.update(trade.side.as_deref().unwrap_or("").as_bytes());
+    hasher.update(format!("{}", trade.size.unwrap_or(0.0)).as_bytes());
+    hasher.update(format!("{}", trade.price.unwrap_or(0.0)).as_bytes());
+    hasher.update(format!("{}", trade.timestamp.unwrap_or(0.0)).as_bytes());
+    format!("{:x}", hasher.finalize())
+}
+
+/// Convert API trades to DB records
+pub fn trades_to_records(wallet: &str, trades: &[TraderTrade]) -> Vec<TraderTradeRecord> {
+    trades
+        .iter()
+        .map(|t| {
+            let hash = compute_trade_hash(wallet, t);
+            TraderTradeRecord {
+                id: None,
+                proxy_wallet: wallet.to_string(),
+                trade_hash: hash,
+                side: t.side.clone().unwrap_or_default(),
+                condition_id: t.condition_id.clone(),
+                asset: t.asset.clone(),
+                size: t.size,
+                price: t.price,
+                title: t.title.clone(),
+                outcome: t.outcome.clone(),
+                event_slug: t.event_slug.clone(),
+                timestamp: t.timestamp,
+                transaction_hash: t.transaction_hash.clone(),
+                alerted: Some(0),
+                created_at: None,
+            }
+        })
+        .collect()
+}
+
+/// Convert a TraderAnalysis into a DB record
+fn analysis_to_record(analysis: &TraderAnalysis) -> LeaderboardTraderRecord {
+    let primary = analysis.strategies.first();
+    LeaderboardTraderRecord {
+        id: None,
+        proxy_wallet: analysis.entry.proxy_wallet.clone().unwrap_or_default(),
+        user_name: analysis.entry.user_name.clone(),
+        rank: analysis.entry.rank.clone(),
+        pnl: analysis.entry.pnl,
+        volume: analysis.entry.vol,
+        portfolio_value: analysis.portfolio_value,
+        primary_strategy: primary.map(|s| s.strategy.label().to_string()),
+        primary_confidence: primary.map(|s| s.confidence),
+        strategies_json: serde_json::to_string(&analysis.strategies).ok(),
+        metrics_json: serde_json::to_string(&analysis.metrics).ok(),
+        top_positions_json: serde_json::to_string(&analysis.top_positions).ok(),
+        trade_count: Some(analysis.metrics.trade_count as i64),
+        unique_markets: Some(analysis.metrics.unique_markets as i64),
+        win_rate: Some(analysis.metrics.win_rate),
+        avg_entry_price: Some(analysis.metrics.avg_entry_price),
+        analyzed_at: None,
+    }
+}
+
 /// Analyze the top N traders from the Polymarket leaderboard
 pub async fn analyze_leaderboard(
     client: &PolymarketDataClient,
     progress: &LeaderboardProgress,
     limit: u32,
+    db_pool: Option<SqlitePool>,
 ) {
     info!(limit, "Starting leaderboard analysis");
 
@@ -582,7 +649,7 @@ pub async fn analyze_leaderboard(
         tokio::time::sleep(std::time::Duration::from_millis(200)).await;
 
         // Fetch trades
-        let trades = match client.get_trades(&wallet).await {
+        let all_trades = match client.get_trades(&wallet).await {
             Ok(t) => t,
             Err(e) => {
                 warn!(name = %name, error = %e, "Failed to fetch trades");
@@ -603,12 +670,15 @@ pub async fn analyze_leaderboard(
         };
 
         // Compute metrics & infer strategy
-        let metrics = compute_metrics(&positions, &trades);
-        let strategies = infer_strategy(&positions, &trades, &metrics);
+        let metrics = compute_metrics(&positions, &all_trades);
+        let strategies = infer_strategy(&positions, &all_trades, &metrics);
+
+        // Keep a copy for display (top 10 trades)
+        let trades_for_display = all_trades.clone();
 
         // Take top 5 positions and 10 recent trades for display
         let top_positions: Vec<TraderPosition> = positions.into_iter().take(5).collect();
-        let recent_trades: Vec<TraderTrade> = trades.into_iter().take(10).collect();
+        let recent_trades: Vec<TraderTrade> = trades_for_display.into_iter().take(10).collect();
 
         let analysis = TraderAnalysis {
             entry: entry.clone(),
@@ -618,6 +688,28 @@ pub async fn analyze_leaderboard(
             top_positions,
             recent_trades,
         };
+
+        // Persist to DB if pool available
+        if let Some(ref pool) = db_pool {
+            let repo = persistence::repository::leaderboard::LeaderboardRepository::new(pool);
+
+            // Save trader analysis
+            let record = analysis_to_record(&analysis);
+            if let Err(e) = repo.save_trader_analysis(&record).await {
+                warn!(name = %name, error = %e, "Failed to save trader to DB");
+            }
+
+            // Save all trades to DB for the watcher
+            let trade_records = trades_to_records(&wallet, &all_trades);
+            match repo.save_trades(&trade_records).await {
+                Ok(n) => {
+                    if n > 0 {
+                        info!(name = %name, new_trades = n, "Saved trades to DB");
+                    }
+                }
+                Err(e) => warn!(name = %name, error = %e, "Failed to save trades to DB"),
+            }
+        }
 
         progress.results.write().unwrap().push(analysis);
         progress.analyzed.fetch_add(1, Ordering::Relaxed);

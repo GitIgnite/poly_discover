@@ -1,6 +1,9 @@
 <script>
   import { onDestroy } from 'svelte';
-  import { startLeaderboardAnalysis, getLeaderboardStatus } from '../lib/api.js';
+  import {
+    startLeaderboardAnalysis, getLeaderboardStatus, getLeaderboardTraders,
+    startWatcher, stopWatcher, getWatcherStatus
+  } from '../lib/api.js';
 
   let status = $state('Idle');
   let progressPct = $state(0);
@@ -11,6 +14,13 @@
   let error = $state(null);
   let expandedCards = $state({});
   let polling = $state(null);
+
+  // Trade Watcher state
+  let watcherStatus = $state('Idle');
+  let watcherAlerts = $state([]);
+  let watcherWatchedCount = $state(0);
+  let watcherError = $state(null);
+  let watcherPolling = $state(null);
 
   const strategyColors = {
     Momentum: { bg: 'bg-blue-900/40', border: 'border-blue-500', text: 'text-blue-400', bar: 'bg-blue-500' },
@@ -66,6 +76,46 @@
     }
   }
 
+  // --- Trade Watcher ---
+  async function handleStartWatcher() {
+    watcherError = null;
+    const res = await startWatcher();
+    if (!res.success) {
+      watcherError = res.message;
+      return;
+    }
+    startWatcherPolling();
+  }
+
+  async function handleStopWatcher() {
+    await stopWatcher();
+  }
+
+  function startWatcherPolling() {
+    stopWatcherPolling();
+    pollWatcherStatus();
+    watcherPolling = setInterval(pollWatcherStatus, 5000);
+  }
+
+  function stopWatcherPolling() {
+    if (watcherPolling) {
+      clearInterval(watcherPolling);
+      watcherPolling = null;
+    }
+  }
+
+  async function pollWatcherStatus() {
+    const res = await getWatcherStatus();
+    watcherStatus = res.status || 'Idle';
+    watcherAlerts = res.alerts || [];
+    watcherWatchedCount = res.watched_count || 0;
+    watcherError = res.error || null;
+
+    if (watcherStatus === 'Idle' || watcherStatus === 'Error') {
+      stopWatcherPolling();
+    }
+  }
+
   function toggleCard(index) {
     expandedCards = { ...expandedCards, [index]: !expandedCards[index] };
   }
@@ -90,14 +140,56 @@
     return `#${rank}`;
   }
 
-  // Check if analysis was already running on mount
-  pollStatus().then(() => {
+  function fmtTimestamp(ts) {
+    if (!ts) return '-';
+    const d = new Date(ts * 1000);
+    return d.toLocaleTimeString('en-US', { hour: '2-digit', minute: '2-digit', second: '2-digit' });
+  }
+
+  // On mount: load persisted traders from DB, check analysis and watcher status
+  async function init() {
+    // Check if analysis is running
+    await pollStatus();
     if (status === 'FetchingLeaderboard' || status === 'AnalyzingTrader') {
       startPolling();
     }
-  });
 
-  onDestroy(stopPolling);
+    // If no results from live analysis, try loading from DB
+    if (results.length === 0 && status === 'Idle') {
+      const dbRes = await getLeaderboardTraders();
+      if (dbRes.success && dbRes.data?.length > 0) {
+        // Convert DB records to the display format the template expects
+        results = dbRes.data.map(t => ({
+          entry: {
+            rank: t.rank,
+            proxyWallet: t.proxy_wallet,
+            userName: t.user_name,
+            pnl: t.pnl,
+            vol: t.volume,
+          },
+          metrics: t.metrics_json ? JSON.parse(t.metrics_json) : {},
+          strategies: t.strategies_json ? JSON.parse(t.strategies_json) : [],
+          portfolioValue: t.portfolio_value,
+          topPositions: t.top_positions_json ? JSON.parse(t.top_positions_json) : [],
+          recentTrades: [],
+        }));
+        status = 'Complete';
+      }
+    }
+
+    // Check watcher status
+    await pollWatcherStatus();
+    if (watcherStatus === 'Watching') {
+      startWatcherPolling();
+    }
+  }
+
+  init();
+
+  onDestroy(() => {
+    stopPolling();
+    stopWatcherPolling();
+  });
 </script>
 
 <div class="space-y-6">
@@ -337,4 +429,86 @@
       <p class="text-gray-500 text-sm">Click "Analyze Top 10" to fetch and analyze the top Polymarket traders</p>
     </div>
   {/if}
+
+  <!-- ================================================================== -->
+  <!-- Trade Watcher Section -->
+  <!-- ================================================================== -->
+  <div class="border-t border-gray-700 pt-6 mt-6">
+    <div class="flex flex-col sm:flex-row items-start sm:items-center justify-between gap-4 mb-4">
+      <div class="flex items-center gap-3">
+        <h3 class="text-xl font-bold text-white">Trade Watcher</h3>
+        {#if watcherStatus === 'Watching'}
+          <span class="inline-flex items-center gap-1.5 px-2 py-0.5 rounded-full bg-emerald-900/40 text-emerald-400 text-xs font-medium border border-emerald-700">
+            <span class="w-2 h-2 rounded-full bg-emerald-400 animate-pulse"></span>
+            LIVE
+          </span>
+        {/if}
+      </div>
+      <div class="flex items-center gap-3">
+        {#if watcherStatus === 'Watching'}
+          <span class="text-xs text-gray-400">Watching {watcherWatchedCount} wallets</span>
+          <button
+            onclick={handleStopWatcher}
+            class="px-4 py-2 rounded-lg font-semibold text-sm bg-red-600 hover:bg-red-500 text-white transition-colors"
+          >
+            Stop Watcher
+          </button>
+        {:else}
+          <button
+            onclick={handleStartWatcher}
+            disabled={results.length === 0}
+            class="px-4 py-2 rounded-lg font-semibold text-sm transition-colors
+              {results.length === 0
+                ? 'bg-gray-600 text-gray-400 cursor-not-allowed'
+                : 'bg-emerald-600 hover:bg-emerald-500 text-white'}"
+            title={results.length === 0 ? 'Run leaderboard analysis first to populate wallets' : 'Start monitoring top trader trades'}
+          >
+            Start Watcher
+          </button>
+        {/if}
+      </div>
+    </div>
+
+    <p class="text-xs text-gray-500 mb-4">
+      Polls top trader wallets every 15s for new trades. Requires leaderboard analysis first.
+    </p>
+
+    {#if watcherError}
+      <div class="bg-red-900/30 border border-red-700 rounded-lg p-3 mb-4">
+        <p class="text-red-400 text-sm">{watcherError}</p>
+      </div>
+    {/if}
+
+    <!-- Alert feed -->
+    {#if watcherAlerts.length > 0}
+      <div class="space-y-2 max-h-96 overflow-y-auto">
+        {#each watcherAlerts as alert, i}
+          <div class="bg-gray-800 rounded-lg p-3 border border-gray-700 flex items-center gap-3">
+            <span class="flex-shrink-0 text-xs font-bold px-2 py-0.5 rounded
+              {alert.side === 'BUY' ? 'bg-emerald-900/50 text-emerald-400' : 'bg-red-900/50 text-red-400'}">
+              {alert.side}
+            </span>
+            <div class="flex-1 min-w-0">
+              <span class="text-sm text-white font-medium">[{alert.user_name}]</span>
+              <span class="text-sm text-gray-300 ml-1">{fmtMoney(alert.size)} @ {fmt(alert.price, 3)}</span>
+              <span class="text-sm text-gray-500 ml-1">— "{alert.title || '?'}"</span>
+              {#if alert.outcome}
+                <span class="text-xs text-gray-500 ml-1">({alert.outcome})</span>
+              {/if}
+            </div>
+            <span class="flex-shrink-0 text-xs text-gray-500">{fmtTimestamp(alert.timestamp)}</span>
+          </div>
+        {/each}
+      </div>
+    {:else if watcherStatus === 'Watching'}
+      <div class="bg-gray-800 rounded-lg p-6 text-center border border-gray-700">
+        <p class="text-gray-400 text-sm">Waiting for new trades...</p>
+        <p class="text-gray-500 text-xs mt-1">Polling every 15 seconds</p>
+      </div>
+    {:else}
+      <div class="bg-gray-800 rounded-lg p-6 text-center border border-gray-700">
+        <p class="text-gray-500 text-sm">Watcher is stopped. Start it to monitor top traders' trades in real-time.</p>
+      </div>
+    {/if}
+  </div>
 </div>
