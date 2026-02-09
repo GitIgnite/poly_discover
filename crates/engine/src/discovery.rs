@@ -357,6 +357,11 @@ pub enum DiscoveryStrategyType {
         params: Vec<IndicatorParams>,
         combine_mode: DynCombineMode,
     },
+    // === Web-Researched Polymarket Strategies (5) ===
+    WebStrategy {
+        id: crate::web_strategies::WebStrategyId,
+        params: crate::web_strategies::WebStrategyParams,
+    },
     // === Arbitrage (1) ===
     Gabagool {
         max_pair_cost: Decimal,
@@ -390,6 +395,7 @@ impl DiscoveryStrategyType {
             Self::AdxEma { .. } => "ADX+EMA",
             Self::WilliamsRStoch { .. } => "Williams%R+Stoch",
             Self::DynamicCombo { .. } => return self.dynamic_combo_name(),
+            Self::WebStrategy { id, .. } => id.display_name(),
             Self::Gabagool { .. } => "Gabagool",
         }
     }
@@ -658,6 +664,25 @@ fn generate_phase1_grid() -> Vec<DiscoveryStrategyType> {
                     });
                 }
             }
+        }
+    }
+
+    // --- Web Strategies: 5 × 3 param variants = 15 ---
+    {
+        use crate::web_strategies::{WebStrategyId, WebStrategyParams};
+        for id in WebStrategyId::all_backtestable() {
+            grid.push(DiscoveryStrategyType::WebStrategy {
+                id: *id,
+                params: WebStrategyParams::default_for(id),
+            });
+            grid.push(DiscoveryStrategyType::WebStrategy {
+                id: *id,
+                params: WebStrategyParams::aggressive_for(id),
+            });
+            grid.push(DiscoveryStrategyType::WebStrategy {
+                id: *id,
+                params: WebStrategyParams::conservative_for(id),
+            });
         }
     }
 
@@ -1045,7 +1070,7 @@ struct OpenPosition {
 /// Estimate Polymarket probability from price change percentage.
 /// Maps price movement to a probability in [0.05, 0.95].
 /// At 0% change → p=0.50 (max fees). Large moves push p toward extremes (lower fees).
-fn estimate_poly_probability(entry_price: Decimal, current_price: Decimal) -> Decimal {
+pub fn estimate_poly_probability(entry_price: Decimal, current_price: Decimal) -> Decimal {
     if entry_price <= Decimal::ZERO {
         return dec!(0.50);
     }
@@ -1700,6 +1725,23 @@ fn generate_refinement_grid(strategy: &DiscoveryStrategyType) -> Vec<DiscoverySt
                 });
             }
         }
+        // Web strategies: try the 2 other param variants
+        DiscoveryStrategyType::WebStrategy { id, params } => {
+            use crate::web_strategies::WebStrategyParams;
+            let default = WebStrategyParams::default_for(id);
+            let aggressive = WebStrategyParams::aggressive_for(id);
+            let conservative = WebStrategyParams::conservative_for(id);
+            for variant_params in [default, aggressive, conservative] {
+                let variant_str = format!("{:?}", variant_params);
+                let current_str = format!("{:?}", params);
+                if variant_str != current_str {
+                    variants.push(DiscoveryStrategyType::WebStrategy {
+                        id: *id,
+                        params: variant_params,
+                    });
+                }
+            }
+        }
         // For legacy combos, return the original (no refinement — too many params)
         other => {
             variants.push(other.clone());
@@ -1802,6 +1844,7 @@ fn result_to_record(
         DiscoveryStrategyType::AdxEma { .. } => "adx_ema",
         DiscoveryStrategyType::WilliamsRStoch { .. } => "williams_r_stoch",
         DiscoveryStrategyType::DynamicCombo { .. } => "dynamic_combo",
+        DiscoveryStrategyType::WebStrategy { .. } => "web_strategy",
         DiscoveryStrategyType::Gabagool { .. } => "gabagool",
     };
 
@@ -3482,6 +3525,64 @@ fn mutate_strategy(
                 combine_mode: new_mode,
             }
         }
+        DiscoveryStrategyType::WebStrategy { id, params } => {
+            use crate::web_strategies::{WebStrategyParams};
+            match params {
+                WebStrategyParams::ProbabilityEdge { edge_threshold, rsi_period, momentum_period, vol_period } => {
+                    DiscoveryStrategyType::WebStrategy {
+                        id: *id,
+                        params: WebStrategyParams::ProbabilityEdge {
+                            edge_threshold: perturb_f64(*edge_threshold, rng).clamp(0.01, 0.15),
+                            rsi_period: perturb_usize(*rsi_period, rng).max(3),
+                            momentum_period: perturb_usize(*momentum_period, rng).max(3),
+                            vol_period: perturb_usize(*vol_period, rng).max(5),
+                        },
+                    }
+                }
+                WebStrategyParams::CatalystMomentum { spike_threshold, trailing_stop_pct, lookback } => {
+                    DiscoveryStrategyType::WebStrategy {
+                        id: *id,
+                        params: WebStrategyParams::CatalystMomentum {
+                            spike_threshold: perturb_f64(*spike_threshold, rng).clamp(0.003, 0.08),
+                            trailing_stop_pct: perturb_f64(*trailing_stop_pct, rng).clamp(0.003, 0.06),
+                            lookback: perturb_usize(*lookback, rng).max(5),
+                        },
+                    }
+                }
+                WebStrategyParams::FavoriteCompounder { min_probability, take_profit, sma_period } => {
+                    DiscoveryStrategyType::WebStrategy {
+                        id: *id,
+                        params: WebStrategyParams::FavoriteCompounder {
+                            min_probability: perturb_f64(*min_probability, rng).clamp(0.45, 0.90),
+                            take_profit: perturb_f64(*take_profit, rng).clamp(0.005, 0.10),
+                            sma_period: perturb_usize(*sma_period, rng).max(5),
+                        },
+                    }
+                }
+                WebStrategyParams::MarketMakingSim { spread, sma_period, inventory_limit } => {
+                    DiscoveryStrategyType::WebStrategy {
+                        id: *id,
+                        params: WebStrategyParams::MarketMakingSim {
+                            spread: perturb_f64(*spread, rng).clamp(0.003, 0.08),
+                            sma_period: perturb_usize(*sma_period, rng).max(5),
+                            inventory_limit: perturb_f64(*inventory_limit, rng).clamp(1.0, 10.0),
+                        },
+                    }
+                }
+                WebStrategyParams::MeanReversionPoly { sma_period, entry_dev, exit_dev } => {
+                    let ed = perturb_f64(*entry_dev, rng).clamp(0.005, 0.10);
+                    let exd = perturb_f64(*exit_dev, rng).clamp(0.002, ed - 0.002);
+                    DiscoveryStrategyType::WebStrategy {
+                        id: *id,
+                        params: WebStrategyParams::MeanReversionPoly {
+                            sma_period: perturb_usize(*sma_period, rng).max(10),
+                            entry_dev: ed,
+                            exit_dev: exd,
+                        },
+                    }
+                }
+            }
+        }
         DiscoveryStrategyType::Gabagool { max_pair_cost, bid_offset, spread_multiplier } => {
             DiscoveryStrategyType::Gabagool {
                 max_pair_cost: perturb_decimal(*max_pair_cost, rng).max(dec!(0.85)).min(dec!(0.99)),
@@ -3619,6 +3720,61 @@ fn crossover_strategies(
                 combine_mode: child_mode,
             })
         }
+        // WebStrategy crossover: same id → mix params
+        (
+            DiscoveryStrategyType::WebStrategy { id: id_a, params: params_a },
+            DiscoveryStrategyType::WebStrategy { id: id_b, params: params_b },
+        ) if id_a == id_b => {
+            use crate::web_strategies::WebStrategyParams;
+            let child_params = match (params_a, params_b) {
+                (
+                    WebStrategyParams::ProbabilityEdge { edge_threshold: et1, rsi_period: rp1, momentum_period: mp1, vol_period: vp1 },
+                    WebStrategyParams::ProbabilityEdge { edge_threshold: et2, rsi_period: rp2, momentum_period: mp2, vol_period: vp2 },
+                ) => WebStrategyParams::ProbabilityEdge {
+                    edge_threshold: if rng.gen_bool(0.5) { *et1 } else { *et2 },
+                    rsi_period: if rng.gen_bool(0.5) { *rp1 } else { *rp2 },
+                    momentum_period: if rng.gen_bool(0.5) { *mp1 } else { *mp2 },
+                    vol_period: if rng.gen_bool(0.5) { *vp1 } else { *vp2 },
+                },
+                (
+                    WebStrategyParams::CatalystMomentum { spike_threshold: st1, trailing_stop_pct: ts1, lookback: lb1 },
+                    WebStrategyParams::CatalystMomentum { spike_threshold: st2, trailing_stop_pct: ts2, lookback: lb2 },
+                ) => WebStrategyParams::CatalystMomentum {
+                    spike_threshold: if rng.gen_bool(0.5) { *st1 } else { *st2 },
+                    trailing_stop_pct: if rng.gen_bool(0.5) { *ts1 } else { *ts2 },
+                    lookback: if rng.gen_bool(0.5) { *lb1 } else { *lb2 },
+                },
+                (
+                    WebStrategyParams::FavoriteCompounder { min_probability: mp1, take_profit: tp1, sma_period: sp1 },
+                    WebStrategyParams::FavoriteCompounder { min_probability: mp2, take_profit: tp2, sma_period: sp2 },
+                ) => WebStrategyParams::FavoriteCompounder {
+                    min_probability: if rng.gen_bool(0.5) { *mp1 } else { *mp2 },
+                    take_profit: if rng.gen_bool(0.5) { *tp1 } else { *tp2 },
+                    sma_period: if rng.gen_bool(0.5) { *sp1 } else { *sp2 },
+                },
+                (
+                    WebStrategyParams::MarketMakingSim { spread: s1, sma_period: sp1, inventory_limit: il1 },
+                    WebStrategyParams::MarketMakingSim { spread: s2, sma_period: sp2, inventory_limit: il2 },
+                ) => WebStrategyParams::MarketMakingSim {
+                    spread: if rng.gen_bool(0.5) { *s1 } else { *s2 },
+                    sma_period: if rng.gen_bool(0.5) { *sp1 } else { *sp2 },
+                    inventory_limit: if rng.gen_bool(0.5) { *il1 } else { *il2 },
+                },
+                (
+                    WebStrategyParams::MeanReversionPoly { sma_period: sp1, entry_dev: ed1, exit_dev: exd1 },
+                    WebStrategyParams::MeanReversionPoly { sma_period: sp2, entry_dev: ed2, exit_dev: exd2 },
+                ) => WebStrategyParams::MeanReversionPoly {
+                    sma_period: if rng.gen_bool(0.5) { *sp1 } else { *sp2 },
+                    entry_dev: if rng.gen_bool(0.5) { *ed1 } else { *ed2 },
+                    exit_dev: if rng.gen_bool(0.5) { *exd1 } else { *exd2 },
+                },
+                _ => return mutate_strategy(a, rng),
+            };
+            Some(DiscoveryStrategyType::WebStrategy {
+                id: *id_a,
+                params: child_params,
+            })
+        }
         // For different strategy types or complex combos, fall back to mutation of the better one
         _ => mutate_strategy(a, rng),
     }
@@ -3629,10 +3785,19 @@ fn generate_random_strategies(count: usize, rng: &mut impl rand::Rng) -> Vec<Dis
     let mut grid = Vec::with_capacity(count);
 
     for _ in 0..count {
-        // 95% dynamic combos, 5% gabagool
-        if rng.gen_bool(0.95) {
+        // 85% dynamic combos, 10% web strategies, 5% gabagool
+        let roll: f64 = rng.gen();
+        if roll < 0.85 {
             let n = rng.gen_range(2..=4usize);
             grid.push(generate_random_dynamic_combo(n, rng));
+        } else if roll < 0.95 {
+            use crate::web_strategies::{WebStrategyId, WebStrategyParams};
+            let ids = WebStrategyId::all_backtestable();
+            let id = ids[rng.gen_range(0..ids.len())];
+            grid.push(DiscoveryStrategyType::WebStrategy {
+                id,
+                params: WebStrategyParams::random_for(&id, rng),
+            });
         } else {
             let mpc_f = rng.gen_range(0.85..=0.99);
             let bo_f = rng.gen_range(0.001..=0.05);

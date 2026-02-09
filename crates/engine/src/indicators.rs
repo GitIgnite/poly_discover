@@ -57,7 +57,7 @@ pub trait SignalGenerator: Send {
 // Helper: convert Decimal close price to f64
 // ============================================================================
 
-fn close_f64(kline: &Kline) -> f64 {
+pub fn close_f64(kline: &Kline) -> f64 {
     kline.close.to_string().parse::<f64>().unwrap_or(0.0)
 }
 
@@ -1250,6 +1250,11 @@ pub fn build_signal_generator(strategy_type: &DiscoveryStrategyType) -> Box<dyn 
             };
 
             Box::new(ComboSignalGenerator::new(name, generators, mode))
+        }
+
+        // Web strategies: delegate to web_strategies module
+        DiscoveryStrategyType::WebStrategy { id, params } => {
+            crate::web_strategies::build_web_generator(id, params)
         }
 
         // Gabagool is handled separately in discovery.rs, not via SignalGenerator

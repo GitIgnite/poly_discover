@@ -17,11 +17,14 @@ pub mod leaderboard;
 pub mod optimizer;
 pub mod strategy;
 pub mod types;
+pub mod watcher;
+pub mod web_strategies;
 
 // Re-exports for convenience
 pub use api::BinanceClient;
 pub use api::PolymarketDataClient;
 pub use leaderboard::{analyze_leaderboard, LeaderboardProgress, LeaderboardStatus, TraderAnalysis};
+pub use watcher::{run_trade_watcher, TradeAlert, WatcherProgress, WatcherStatus};
 pub use discovery::{
     run_continuous_discovery, run_discovery, DiscoveryProgress, DiscoveryRequest, DiscoveryResult,
     DiscoveryStatus, DiscoveryStrategyType, SizingMode,
@@ -38,3 +41,4 @@ pub use optimizer::{
 };
 pub use strategy::{RsiStrategy, Signal};
 pub use types::*;
+pub use web_strategies::{get_catalog, WebStrategyCatalogEntry, WebStrategyId, WebStrategyParams};

@@ -46,7 +46,50 @@ CREATE INDEX IF NOT EXISTS idx_disc_net_pnl_real ON discovery_backtests(CAST(net
 -- Covering index for top-strategies CTE: PARTITION BY strategy_name ORDER BY win_rate
 CREATE INDEX IF NOT EXISTS idx_disc_name_winrate ON discovery_backtests(strategy_name, CAST(win_rate AS REAL) DESC) WHERE total_trades >= 5;
 CREATE INDEX IF NOT EXISTS idx_disc_name_pnl ON discovery_backtests(strategy_name, CAST(net_pnl AS REAL) DESC) WHERE total_trades >= 5;
-CREATE INDEX IF NOT EXISTS idx_disc_name_score ON discovery_backtests(strategy_name, CAST(composite_score AS REAL) DESC) WHERE total_trades >= 5
+CREATE INDEX IF NOT EXISTS idx_disc_name_score ON discovery_backtests(strategy_name, CAST(composite_score AS REAL) DESC) WHERE total_trades >= 5;
+
+-- Leaderboard traders (persisted analysis results)
+CREATE TABLE IF NOT EXISTS leaderboard_traders (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    proxy_wallet TEXT NOT NULL,
+    user_name TEXT,
+    rank TEXT,
+    pnl REAL DEFAULT 0,
+    volume REAL DEFAULT 0,
+    portfolio_value REAL DEFAULT 0,
+    primary_strategy TEXT,
+    primary_confidence REAL DEFAULT 0,
+    strategies_json TEXT,
+    metrics_json TEXT,
+    top_positions_json TEXT,
+    trade_count INTEGER DEFAULT 0,
+    unique_markets INTEGER DEFAULT 0,
+    win_rate REAL DEFAULT 0,
+    avg_entry_price REAL DEFAULT 0,
+    analyzed_at INTEGER DEFAULT (strftime('%s', 'now')),
+    UNIQUE(proxy_wallet)
+);
+
+-- Trader trades (history for watcher)
+CREATE TABLE IF NOT EXISTS trader_trades (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    proxy_wallet TEXT NOT NULL,
+    trade_hash TEXT NOT NULL UNIQUE,
+    side TEXT NOT NULL,
+    condition_id TEXT,
+    asset TEXT,
+    size REAL,
+    price REAL,
+    title TEXT,
+    outcome TEXT,
+    event_slug TEXT,
+    timestamp REAL,
+    transaction_hash TEXT,
+    alerted INTEGER DEFAULT 0,
+    created_at INTEGER DEFAULT (strftime('%s', 'now'))
+);
+CREATE INDEX IF NOT EXISTS idx_trader_trades_wallet ON trader_trades(proxy_wallet, timestamp DESC);
+CREATE INDEX IF NOT EXISTS idx_trader_trades_hash ON trader_trades(trade_hash)
 "#;
 
 /// SQL migrations to add new columns (idempotent — ignores "duplicate column" errors)

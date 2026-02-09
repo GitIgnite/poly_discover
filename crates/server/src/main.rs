@@ -14,12 +14,12 @@ use axum::{
 use chrono::Utc;
 use clap::{Parser, Subcommand};
 use engine::{
-    analyze_leaderboard, run_continuous_discovery, run_discovery, run_optimization, BinanceClient,
-    DiscoveryProgress, DiscoveryRequest, DiscoveryResult, DiscoveryStatus, LeaderboardProgress,
-    OptimizeProgress, OptimizeRequest, OptimizeStatus, PolymarketDataClient,
-    SizingMode,
+    analyze_leaderboard, run_continuous_discovery, run_discovery, run_optimization,
+    run_trade_watcher, BinanceClient, DiscoveryProgress, DiscoveryRequest, DiscoveryResult,
+    DiscoveryStatus, LeaderboardProgress, OptimizeProgress, OptimizeRequest, OptimizeStatus,
+    PolymarketDataClient, SizingMode, WatcherProgress,
 };
-use persistence::repository::DiscoveryRepository;
+use persistence::repository::{DiscoveryRepository, LeaderboardRepository};
 use rust_decimal::Decimal;
 use serde::Deserialize;
 use std::collections::HashMap;
@@ -90,6 +90,7 @@ struct AppState {
     discovery_progress: Arc<DiscoveryProgress>,
     optimize_progress: Arc<OptimizeProgress>,
     leaderboard_progress: Arc<LeaderboardProgress>,
+    watcher_progress: Arc<WatcherProgress>,
 }
 
 fn init_logging(verbose: bool) {
@@ -165,6 +166,7 @@ async fn cmd_serve(host: &str, port: u16) -> anyhow::Result<()> {
         discovery_progress: Arc::new(DiscoveryProgress::new()),
         optimize_progress: Arc::new(OptimizeProgress::new()),
         leaderboard_progress: Arc::new(LeaderboardProgress::new()),
+        watcher_progress: Arc::new(WatcherProgress::new()),
     };
 
     let cors = CorsLayer::new()
@@ -196,6 +198,11 @@ async fn cmd_serve(host: &str, port: u16) -> anyhow::Result<()> {
         .route("/binance/klines", get(api_binance_klines))
         .route("/leaderboard", post(api_analyze_leaderboard))
         .route("/leaderboard/status", get(api_leaderboard_status))
+        .route("/leaderboard/traders", get(api_leaderboard_traders))
+        .route("/watcher/start", post(api_start_watcher))
+        .route("/watcher/stop", post(api_stop_watcher))
+        .route("/watcher/status", get(api_watcher_status))
+        .route("/strategies/catalog", get(api_strategies_catalog))
         .with_state(state);
 
     let app = Router::new()
@@ -221,6 +228,11 @@ async fn cmd_serve(host: &str, port: u16) -> anyhow::Result<()> {
     println!("  GET  /api/binance/klines      - Fetch Binance klines (proxy)");
     println!("  POST /api/leaderboard         - Analyze top Polymarket traders");
     println!("  GET  /api/leaderboard/status  - Poll leaderboard analysis progress");
+    println!("  GET  /api/leaderboard/traders - Get persisted traders from DB");
+    println!("  POST /api/watcher/start       - Start trade watcher");
+    println!("  POST /api/watcher/stop        - Stop trade watcher");
+    println!("  GET  /api/watcher/status      - Poll trade watcher status + alerts");
+    println!("  GET  /api/strategies/catalog  - Web-researched strategies catalog");
     println!("\n  Database: {}", db_path);
     println!("\nPress Ctrl+C to stop\n");
 
@@ -942,9 +954,10 @@ async fn api_analyze_leaderboard(
 
     let client = state.polymarket.clone();
     let progress = state.leaderboard_progress.clone();
+    let db_pool = Some(state.db.pool_clone());
 
     tokio::spawn(async move {
-        analyze_leaderboard(&client, &progress, 10).await;
+        analyze_leaderboard(&client, &progress, 10, db_pool).await;
     });
 
     Ok(Json(serde_json::json!({
@@ -977,6 +990,103 @@ async fn api_leaderboard_status(State(state): State<AppState>) -> Json<serde_jso
         "current_trader": current_trader,
         "results": results,
         "error": error,
+    }))
+}
+
+// ============================================================================
+// API Handlers — Leaderboard Traders (DB persistence)
+// ============================================================================
+
+/// GET /api/leaderboard/traders — get persisted traders from DB
+async fn api_leaderboard_traders(State(state): State<AppState>) -> Json<serde_json::Value> {
+    let repo = LeaderboardRepository::new(state.db.pool());
+    match repo.get_all_traders().await {
+        Ok(traders) => Json(serde_json::json!({
+            "success": true,
+            "data": traders,
+            "total": traders.len(),
+        })),
+        Err(e) => Json(serde_json::json!({
+            "success": false,
+            "error": format!("Failed to load traders: {}", e),
+            "data": [],
+            "total": 0,
+        })),
+    }
+}
+
+// ============================================================================
+// API Handlers — Trade Watcher
+// ============================================================================
+
+/// POST /api/watcher/start — start the trade watcher
+async fn api_start_watcher(
+    State(state): State<AppState>,
+) -> Result<Json<serde_json::Value>, StatusCode> {
+    if state.watcher_progress.is_running() {
+        return Ok(Json(serde_json::json!({
+            "success": false,
+            "message": "Trade watcher is already running",
+        })));
+    }
+
+    info!("Starting trade watcher");
+    state.watcher_progress.reset();
+
+    let client = state.polymarket.clone();
+    let progress = state.watcher_progress.clone();
+    let db_pool = state.db.pool_clone();
+
+    tokio::spawn(async move {
+        run_trade_watcher(&client, &progress, db_pool).await;
+    });
+
+    Ok(Json(serde_json::json!({
+        "success": true,
+        "message": "Trade watcher started",
+    })))
+}
+
+/// POST /api/watcher/stop — stop the trade watcher
+async fn api_stop_watcher(State(state): State<AppState>) -> Json<serde_json::Value> {
+    state
+        .watcher_progress
+        .cancelled
+        .store(true, std::sync::atomic::Ordering::Relaxed);
+    info!("Trade watcher stop requested via API");
+    Json(serde_json::json!({
+        "success": true,
+        "message": "Watcher stop requested",
+    }))
+}
+
+/// GET /api/watcher/status — poll trade watcher status + alerts
+async fn api_watcher_status(State(state): State<AppState>) -> Json<serde_json::Value> {
+    let progress = &state.watcher_progress;
+    let status = *progress.status.read().unwrap();
+    let alerts = progress.alerts.read().unwrap().clone();
+    let watched_count = *progress.watched_count.read().unwrap();
+    let error = progress.error_message.read().unwrap().clone();
+
+    Json(serde_json::json!({
+        "status": status,
+        "watched_count": watched_count,
+        "alerts": alerts,
+        "error": error,
+    }))
+}
+
+// ============================================================================
+// Strategies Catalog
+// ============================================================================
+
+/// GET /api/strategies/catalog — return the web-researched strategies catalog
+async fn api_strategies_catalog() -> Json<serde_json::Value> {
+    let catalog = engine::get_catalog();
+    Json(serde_json::json!({
+        "success": true,
+        "data": catalog,
+        "total": catalog.len(),
     }))
 }
 

@@ -59,6 +59,19 @@
       case 'obv_macd': return `OBV(${st.obv_sma_period}) MACD(${st.macd_fast},${st.macd_slow})`;
       case 'adx_ema': return `ADX(${st.adx_period},${st.adx_threshold}) EMA(${st.ema_fast},${st.ema_slow})`;
       case 'williams_r_stoch': return `WR(${st.wr_period}) Stoch(${st.stoch_period})`;
+      case 'web_strategy': {
+        const p = st.params;
+        if (!p) return `Web:${st.id}`;
+        const tag = p.web_strategy || st.id;
+        switch (tag) {
+          case 'probability_edge': return `Web:ProbEdge Edge=${p.edge_threshold} RSI=${p.rsi_period} Mom=${p.momentum_period}`;
+          case 'catalyst_momentum': return `Web:CatalystMom Spike=${p.spike_threshold} Trail=${p.trailing_stop_pct} LB=${p.lookback}`;
+          case 'favorite_compounder': return `Web:FavComp MinP=${p.min_probability} TP=${p.take_profit} SMA=${p.sma_period}`;
+          case 'market_making_sim': return `Web:MktMaker Spread=${p.spread} SMA=${p.sma_period} Inv=${p.inventory_limit}`;
+          case 'mean_reversion_poly': return `Web:MeanRev SMA=${p.sma_period} Entry=${p.entry_dev} Exit=${p.exit_dev}`;
+          default: return `Web:${tag}`;
+        }
+      }
       default: return JSON.stringify(st);
     }
   }
