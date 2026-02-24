@@ -56,7 +56,11 @@
   async function handleStartBacktest() {
     loading = true;
     await startObBacktest();
+    // Optimistic UI: show progress immediately before next poll
+    backtestStatus = { running: true, status: 'Probing', current_step: 'Starting orderbook backtest...', logs: [] };
     loading = false;
+    // Immediate poll to get real status
+    await pollBacktest();
   }
 
   async function handleCancelBacktest() {
@@ -104,6 +108,17 @@
   $effect(() => {
     selectedWindow;
     loadPatterns();
+  });
+
+  // Auto-scroll log panel when new logs arrive
+  $effect(() => {
+    if (backtestStatus?.logs?.length) {
+      // tick: wait for DOM update, then scroll
+      setTimeout(() => {
+        const el = document.getElementById('ob-log-panel');
+        if (el) el.scrollTop = el.scrollHeight;
+      }, 0);
+    }
   });
 
   onDestroy(() => {
@@ -166,7 +181,7 @@
     </div>
 
     <!-- Progress -->
-    {#if backtestStatus?.running || backtestStatus?.status === 'Complete'}
+    {#if backtestStatus?.running || backtestStatus?.status === 'Complete' || backtestStatus?.status === 'Error'}
       <div class="space-y-3">
         <!-- Status steps -->
         <div class="flex flex-wrap gap-2">
@@ -221,6 +236,16 @@
         {#if backtestStatus?.error}
           <div class="bg-red-500/10 border border-red-500/30 rounded-lg p-3 text-sm text-red-400">
             {backtestStatus.error}
+          </div>
+        {/if}
+
+        <!-- Logs -->
+        {#if backtestStatus?.logs?.length > 0}
+          <div class="bg-gray-900 border border-gray-700 rounded-lg p-3 max-h-[200px] overflow-y-auto font-mono text-xs text-gray-300 space-y-0.5"
+               id="ob-log-panel">
+            {#each backtestStatus.logs as log}
+              <div class="text-gray-400">{log}</div>
+            {/each}
           </div>
         {/if}
       </div>

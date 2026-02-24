@@ -48,6 +48,7 @@ pub struct ObBacktestProgress {
     pub cancelled: AtomicBool,
     pub best_patterns: RwLock<Vec<DetectedPattern>>,
     pub stats: RwLock<ObBacktestStats>,
+    pub logs: RwLock<Vec<String>>,
 }
 
 impl ObBacktestProgress {
@@ -65,6 +66,7 @@ impl ObBacktestProgress {
             cancelled: AtomicBool::new(false),
             best_patterns: RwLock::new(Vec::new()),
             stats: RwLock::new(ObBacktestStats::default()),
+            logs: RwLock::new(Vec::new()),
         }
     }
 
@@ -81,6 +83,7 @@ impl ObBacktestProgress {
         self.cancelled.store(false, Ordering::Relaxed);
         *self.best_patterns.write().unwrap() = Vec::new();
         *self.stats.write().unwrap() = ObBacktestStats::default();
+        self.logs.write().unwrap().clear();
     }
 
     pub fn is_running(&self) -> bool {
@@ -88,17 +91,28 @@ impl ObBacktestProgress {
         !matches!(s, ObBacktestStatus::Idle | ObBacktestStatus::Complete | ObBacktestStatus::Error)
     }
 
-    fn set_status(&self, s: ObBacktestStatus) {
+    pub fn set_status(&self, s: ObBacktestStatus) {
         *self.status.write().unwrap() = s;
     }
 
-    fn set_step(&self, step: &str) {
+    pub fn set_step(&self, step: &str) {
         *self.current_step.write().unwrap() = step.to_string();
     }
 
-    fn set_error(&self, msg: String) {
+    pub fn set_error(&self, msg: String) {
+        self.add_log(&format!("ERROR: {}", msg));
         *self.error_message.write().unwrap() = Some(msg);
         *self.status.write().unwrap() = ObBacktestStatus::Error;
+    }
+
+    pub fn add_log(&self, msg: &str) {
+        let timestamp = Utc::now().format("%H:%M:%S");
+        let mut logs = self.logs.write().unwrap();
+        logs.push(format!("[{}] {}", timestamp, msg));
+        if logs.len() > 200 {
+            let excess = logs.len() - 200;
+            logs.drain(..excess);
+        }
     }
 
     fn is_cancelled(&self) -> bool {
@@ -155,12 +169,16 @@ pub async fn run_orderbook_backtest(
     // Step 1: Probe data sources
     progress.set_status(ObBacktestStatus::Probing);
     progress.set_step("Probing available data sources...");
+    progress.add_log("Probing data sources...");
     info!("Orderbook backtest: probing data sources");
 
     // Use a known BTC 15-min market condition_id for probing
     // We'll try to discover one first, then probe with it
     let probe_market = match find_probe_market(client).await {
-        Some(m) => m,
+        Some(m) => {
+            progress.add_log(&format!("Probe market found: {}", m));
+            m
+        }
         None => {
             progress.set_error("Could not find any BTC 15-min market for probing".into());
             return;
@@ -169,6 +187,7 @@ pub async fn run_orderbook_backtest(
 
     let data_source = client.probe_best_data_source(&probe_market).await;
     *progress.data_source.write().unwrap() = data_source;
+    progress.add_log(&format!("Best data source: {}", data_source));
     info!("Best data source: {}", data_source);
 
     if data_source == DataSource::None {
@@ -181,6 +200,7 @@ pub async fn run_orderbook_backtest(
     // Step 2: Discover markets
     progress.set_status(ObBacktestStatus::DiscoveringMarkets);
     progress.set_step("Discovering BTC 15-min markets via Gamma API...");
+    progress.add_log("Discovering BTC 15-min markets via Gamma API...");
     info!("Orderbook backtest: discovering markets");
 
     let markets = match client.get_all_btc_15min_markets().await {
@@ -192,6 +212,7 @@ pub async fn run_orderbook_backtest(
     };
 
     info!(count = markets.len(), "Markets discovered");
+    progress.add_log(&format!("Found {} markets", markets.len()));
     progress.markets_discovered.store(markets.len() as u32, Ordering::Relaxed);
 
     // Convert to DB records and save
@@ -206,7 +227,10 @@ pub async fn run_orderbook_backtest(
     }
 
     match OrderbookRepository::save_markets_batch(&db_pool, &market_records).await {
-        Ok(n) => info!(inserted = n, "Markets saved to DB"),
+        Ok(n) => {
+            progress.add_log(&format!("Markets saved to DB: {} inserted", n));
+            info!(inserted = n, "Markets saved to DB");
+        }
         Err(e) => {
             progress.set_error(format!("Failed to save markets: {}", e));
             return;
@@ -218,6 +242,7 @@ pub async fn run_orderbook_backtest(
     // Step 3: Fetch data for unfetched markets
     progress.set_status(ObBacktestStatus::FetchingData);
     progress.set_step("Fetching price data for markets...");
+    progress.add_log("Fetching price data for unfetched markets...");
 
     let batch_size = 1000i64;
     loop {
@@ -294,6 +319,7 @@ pub async fn run_orderbook_backtest(
     // Step 4: Extract features
     progress.set_status(ObBacktestStatus::ExtractingFeatures);
     progress.set_step("Extracting features from market data...");
+    progress.add_log("Extracting features from market data...");
     info!("Orderbook backtest: extracting features");
 
     let batch_size = 1000i64;
@@ -351,6 +377,7 @@ pub async fn run_orderbook_backtest(
     // Step 5: Detect patterns
     progress.set_status(ObBacktestStatus::DetectingPatterns);
     progress.set_step("Detecting patterns from features...");
+    progress.add_log("Detecting patterns from features...");
     info!("Orderbook backtest: detecting patterns");
 
     let run_id = format!("run_{}", Utc::now().timestamp());
@@ -398,12 +425,16 @@ pub async fn run_orderbook_backtest(
 
     if !pattern_records.is_empty() {
         match OrderbookRepository::save_patterns(&db_pool, &pattern_records, &run_id).await {
-            Ok(n) => info!(count = n, "Patterns saved to DB"),
+            Ok(n) => {
+                progress.add_log(&format!("Patterns saved to DB: {}", n));
+                info!(count = n, "Patterns saved to DB");
+            }
             Err(e) => warn!("Failed to save patterns: {}", e),
         }
     }
 
     progress.patterns_found.store(all_patterns.len() as u32, Ordering::Relaxed);
+    progress.add_log(&format!("{} patterns detected total", all_patterns.len()));
     *progress.best_patterns.write().unwrap() = all_patterns.iter().take(20).cloned().collect();
 
     // Update stats
@@ -444,18 +475,26 @@ pub async fn run_orderbook_backtest(
     // Step 6: Cleanup
     progress.set_status(ObBacktestStatus::Cleanup);
     progress.set_step("Cleaning up raw price data...");
+    progress.add_log("Cleaning up raw price data...");
 
     match OrderbookRepository::purge_prices_for_extracted(&db_pool).await {
-        Ok(n) => info!(purged = n, "Price data purged"),
+        Ok(n) => {
+            progress.add_log(&format!("Price data purged: {} rows", n));
+            info!(purged = n, "Price data purged");
+        }
         Err(e) => warn!("Purge failed: {}", e),
     }
     match OrderbookRepository::purge_old_snapshots(&db_pool, 30).await {
-        Ok(n) => info!(purged = n, "Old snapshots purged"),
+        Ok(n) => {
+            progress.add_log(&format!("Old snapshots purged: {} rows", n));
+            info!(purged = n, "Old snapshots purged");
+        }
         Err(e) => warn!("Snapshot purge failed: {}", e),
     }
 
     progress.set_status(ObBacktestStatus::Complete);
     progress.set_step("Analysis complete");
+    progress.add_log(&format!("Backtest complete: {} patterns detected", all_patterns.len()));
     info!(
         patterns = all_patterns.len(),
         "Orderbook backtest complete"

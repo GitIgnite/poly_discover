@@ -1256,6 +1256,10 @@ async fn api_start_ob_backtest(
     }
 
     state.ob_backtest_progress.reset();
+    // Set running state BEFORE spawning so the first poll sees it
+    state.ob_backtest_progress.set_status(engine::ObBacktestStatus::Probing);
+    state.ob_backtest_progress.set_step("Starting orderbook backtest...");
+    state.ob_backtest_progress.add_log("Orderbook backtest started");
 
     let progress = Arc::clone(&state.ob_backtest_progress);
     let client = Arc::clone(&state.polymarket);
@@ -1281,6 +1285,7 @@ async fn api_ob_backtest_status(
     let error = p.error_message.read().unwrap().clone();
     let patterns = p.best_patterns.read().unwrap().clone();
     let stats = p.stats.read().unwrap().clone();
+    let logs = p.logs.read().unwrap().clone();
 
     let mut response = serde_json::json!({
         "status": format!("{:?}", status),
@@ -1293,6 +1298,7 @@ async fn api_ob_backtest_status(
         "features_extracted": p.features_extracted.load(std::sync::atomic::Ordering::Relaxed),
         "patterns_found": p.patterns_found.load(std::sync::atomic::Ordering::Relaxed),
         "stats": stats,
+        "logs": logs,
     });
 
     if !patterns.is_empty() {

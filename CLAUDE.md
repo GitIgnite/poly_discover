@@ -417,6 +417,21 @@ Ports à ouvrir dans le Security Group EC2 :
 
 ## Historique des changements récents
 
+### Fix Orderbook Backtest — bouton + logs visibles (2026-02-24)
+
+**Bug fix** : le bouton "Analyser" de l'Orderbook Backtest ne montrait aucun feedback visuel. Deux problèmes corrigés :
+
+1. **Race condition** : `api_start_ob_backtest()` faisait `reset()` puis `tokio::spawn()`. Le status restait `Idle` entre le reset et le démarrage du background task. Le frontend voyait `running: false` → pas de progression affichée. **Fix** : le handler met le status à `Probing` **avant** le `tokio::spawn()`.
+
+2. **Pas de logs frontend** : la progression n'avait qu'un `current_step` (une string). Si le backtest échouait tôt (Probing, API down), l'erreur était invisible. **Fix** : ajout d'un buffer de logs (`Vec<String>`, max 200 lignes FIFO) dans `ObBacktestProgress` + panneau de logs scrollable côté frontend.
+
+**Fichiers modifiés (3) :**
+- `crates/engine/src/orderbook_backtest.rs` — `set_status()`, `set_step()`, `set_error()` rendus `pub fn`. Nouveau champ `logs: RwLock<Vec<String>>` + méthode `pub fn add_log()` (timestamp + message, FIFO 200 lignes). Appels `add_log()` à chaque étape significative de `run_orderbook_backtest()`.
+- `crates/server/src/main.rs` — `api_start_ob_backtest()` : set status `Probing` avant `tokio::spawn()`. `api_ob_backtest_status()` : ajout du champ `logs` dans la réponse JSON.
+- `src/pages/OrderbookAnalysis.svelte` — `handleStartBacktest()` : optimistic UI (force `running: true` immédiatement) + poll immédiat. Condition d'affichage élargie à `status === 'Error'`. Nouveau panneau de logs (fond noir, mono, scroll auto, max 200px).
+
+---
+
 ### Auto-increment version on each push (2026-02-24)
 
 **Version format changé** de `1.0.0-{git_hash}` vers `1.0.{commit_count}-{git_hash}`. Le commit count (`git rev-list --count HEAD`) s'incrémente automatiquement à chaque commit, donnant un numéro de build visible (ex: `1.0.34-af3f284` → `1.0.35-b1c2d3e`).
