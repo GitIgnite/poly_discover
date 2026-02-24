@@ -37,7 +37,7 @@ Le dossier `docs/` contient la documentation essentielle du projet. **Consulter 
 ```bash
 cargo build                          # Debug build
 cargo build --release                # Release build
-cargo test --all                     # Run all workspace tests (67 tests)
+cargo test --all                     # Run all workspace tests (77 tests)
 cargo test -p engine                 # Tests for engine crate only
 cargo run -- serve --port 3001       # Start web server
 cargo run -- run --symbols BTCUSDT   # Run discovery headless (CLI mode, default 365 days)
@@ -78,11 +78,12 @@ crates/
 - `gabagool.rs` — Binary arbitrage backtest on synthetic Polymarket-style markets
 - `leaderboard.rs` — Leaderboard analyzer: fetch top traders, compute metrics, infer strategies, persist to DB
 - `watcher.rs` — Trade watcher: polls top trader wallets every 15s for new trades, generates alerts
+- `profile.rs` — Profile Analyzer: deep analysis of a Polymarket user's trading activity (trade grouping by market, per-market strategy inference, category breakdown, activity timeline)
 - `web_strategies.rs` — Web-researched Polymarket strategies: static catalogue (12 entries), 5 backtestable SignalGenerators, param variants
 - `api/binance.rs` — Binance public klines API client
-- `api/polymarket.rs` — Polymarket Data API client (leaderboard, positions, trades, portfolio value)
+- `api/polymarket.rs` — Polymarket Data API client (leaderboard, positions, trades, portfolio value, activity, closed positions, Gamma API for market metadata, username resolution, paginated fetching)
 
-**persistence** has 3 tables: `discovery_backtests` (30 columns), `leaderboard_traders` (17 columns), `trader_trades` (15 columns). WAL mode, 5-connection pool. Migrations are idempotent (ALTER TABLE tolerates "duplicate column name"). Two repositories: `DiscoveryRepository` and `LeaderboardRepository`.
+**persistence** has 5 tables: `discovery_backtests` (30 columns), `leaderboard_traders` (17 columns), `trader_trades` (15 columns), `profile_analyses` (25 columns), `profile_trades` (13 columns). WAL mode, 5-connection pool. Migrations are idempotent (ALTER TABLE tolerates "duplicate column name"). Three repositories: `DiscoveryRepository`, `LeaderboardRepository`, and `ProfileRepository`.
 
 **server** exposes REST endpoints and a CLI with two subcommands: `serve` (web server) and `run` (headless discovery).
 
@@ -100,7 +101,8 @@ src/
 │   ├── KnowledgeBase.svelte Auto-refresh when discovery running, LIVE badge
 │   ├── Optimizer.svelte    Parameter optimization UI
 │   ├── Leaderboard.svelte  Polymarket top traders analysis + strategy inference + trade watcher
-│   └── StrategyResearch.svelte  Web-researched Polymarket strategies catalog (12 strategies, filterable)
+│   ├── StrategyResearch.svelte  Web-researched Polymarket strategies catalog (12 strategies, filterable)
+│   └── ProfileAnalysis.svelte   Deep user profile analysis by username (trades grouped by market, strategy inference)
 └── components/
     ├── Layout.svelte       Main layout wrapper
     └── Sidebar.svelte      Navigation + discovery running indicator (pulse dot + counter)
@@ -117,7 +119,7 @@ Le statut discovery est géré au niveau **App.svelte** (pas dans Discovery.svel
 - **TopStrategies.svelte** : top 20 dédupliqué par `strategy_name`, auto-refresh 60s, podium top 3, badge LIVE
 - **Playbook.svelte** : top 3 par win rate (via `getTopStrategies(3, 'win_rate')`), tableau "Paramètres essentiels Polymarket" + "Guide d'implémentation bot" ultra-détaillé (7 sections en FR), bouton Copy
 - **KnowledgeBase.svelte** : auto-refresh toutes les 60s quand `$discoveryStatus.running === true`, badge LIVE
-- **Sidebar.svelte** : pulse dot animé + compteur quand discovery tourne (8 nav items: Discovery, Top 20, Playbook, Knowledge Base, Optimizer, Leaderboard, Strategies Web)
+- **Sidebar.svelte** : pulse dot animé + compteur quand discovery tourne (9 nav items: Discovery, Top 20, Playbook, Knowledge Base, Optimizer, Leaderboard, Strategies Web, Profile)
 
 ## Strategy Catalog
 
@@ -302,6 +304,10 @@ Le système utilise une estimation dynamique de probabilité basée sur le chang
 | POST | `/api/watcher/stop` | Stop trade watcher |
 | GET | `/api/watcher/status` | Poll trade watcher status + alerts |
 | GET | `/api/strategies/catalog` | Web-researched strategies catalog (12 entries) |
+| POST | `/api/profile/analyze` | Start profile analysis for a Polymarket username |
+| GET | `/api/profile/status` | Poll profile analysis progress + result |
+| POST | `/api/profile/cancel` | Cancel running profile analysis |
+| GET | `/api/profile/history` | List past profile analyses from DB |
 
 ## Testing
 
@@ -313,10 +319,11 @@ Unit tests exist in:
 - `crates/engine/src/gabagool.rs` — 7 tests for arbitrage engine
 - `crates/engine/src/engine.rs` — 2 tests for backtest engine
 - `crates/engine/src/leaderboard.rs` — 6 tests for metrics computation and strategy inference
+- `crates/engine/src/profile.rs` — 10 tests for market strategy inference, trade grouping, category breakdown, activity timeline, global strategy, max drawdown
 - `crates/engine/src/web_strategies.rs` — 8 tests for catalogue, signal generators, param variants
 
 ```bash
-cargo test --all                     # Run all 67 tests
+cargo test --all                     # Run all 77 tests
 cargo test -p engine -- fees         # Run fee-specific tests
 cargo test -p engine -- discovery    # Run discovery tests
 cargo test -p engine -- indicators   # Run indicator tests
@@ -324,6 +331,7 @@ cargo test -p engine -- ml_guided    # Run ML-guided exploration tests
 cargo test -p engine -- dynamic_combo # Run DynamicCombo tests
 cargo test -p engine -- leaderboard  # Run leaderboard analyzer tests
 cargo test -p engine -- web_strategies # Run web strategies tests
+cargo test -p engine -- profile        # Run profile analyzer tests
 ```
 
 ## Déploiement AWS
@@ -393,6 +401,65 @@ Ports à ouvrir dans le Security Group EC2 :
 | 4000 | poly-discover |
 
 ## Historique des changements récents
+
+### Profile Analyzer — Analyse complète d'un profil Polymarket par username (2026-02-24)
+
+**Nouvelle feature** : page d'analyse approfondie d'un profil utilisateur Polymarket. L'utilisateur saisit un nom d'utilisateur, le système résout le username en proxyWallet via l'API leaderboard, puis récupère tous les trades (paginé), positions ouvertes/fermées, métadonnées marchés (Gamma API), et produit une analyse complète avec regroupement par marché et inférence de stratégie.
+
+**Nouveau module `crates/engine/src/profile.rs` :**
+- `MarketStrategy` enum (9 variants : Scalping, Momentum, Contrarian, MarketMaking, EventDriven, HoldToResolution, SwingTrading, Accumulation, DCA)
+- `MarketAnalysis` struct — trades regroupés par condition_id avec métriques calculées et stratégie inférée
+- `ProfileAnalysis` struct — analyse complète (positions, marchés, catégories, timeline, stratégie globale, métriques avancées)
+- `ProfileProgress` struct — tracking du progrès (8 étapes: ResolvingUsername → Complete)
+- `analyze_profile()` — orchestrateur principal (résolution username, fetch paginé, groupement, analyse)
+- `infer_market_strategy()` — inférence de stratégie par marché (9 types, basée sur patterns buy/sell, prix, timing)
+- `infer_global_strategy()` — agrégation des stratégies par marché pour déterminer le profil global
+- 10 tests unitaires
+
+**Extension du client API `crates/engine/src/api/polymarket.rs` :**
+- `resolve_username(username)` — résolution username → proxyWallet via `/v1/leaderboard?userName=`
+- `get_all_trades(address)` — fetch paginé (limit=10000) de tous les trades
+- `get_all_positions(address)` — fetch paginé (limit=500) des positions ouvertes
+- `get_all_closed_positions(address)` — fetch paginé (limit=50) des positions fermées
+- `get_all_activity(address)` — fetch paginé (limit=500) de l'activité
+- `get_markets_by_condition_ids(ids)` — batch fetch Gamma API (`gamma-api.polymarket.com`)
+- `fetch_all_paginated<T>()` — helper générique de pagination avec rate limiting (200ms)
+- Nouvelles structs : `ClosedPosition`, `UserActivity`, `GammaMarket`, `GammaEvent`
+
+**Nouveau fichier `crates/persistence/src/repository/profile.rs` :**
+- `ProfileAnalysisRecord` — record DB pour les analyses
+- `ProfileTradeRecord` — record DB pour les trades
+- `ProfileRepository` — save_analysis, get_analysis, get_all_analyses, save_trades, get_trades_by_market, delete_analysis
+
+**Nouveau schema DB (2 tables) :**
+- `profile_analyses` (25 colonnes) — analyses persistées avec JSON sérialisé
+- `profile_trades` (13 colonnes) — trades avec déduplication par trade_hash
+
+**Nouveaux endpoints server :**
+- `POST /api/profile/analyze` — lancer l'analyse d'un username
+- `GET /api/profile/status` — polling du progrès + résultat
+- `POST /api/profile/cancel` — annuler l'analyse
+- `GET /api/profile/history` — historique des analyses
+
+**Nouveau fichier frontend `src/pages/ProfileAnalysis.svelte` :**
+- Input username + bouton Analyze + historique des analyses passées
+- Barre de progression avec status textuel et % complété
+- 4 onglets : Vue d'ensemble (métriques, stratégies, catégories), Marchés (cards filtrables/expandables par marché), Positions (ouvertes/fermées), Timeline (activité quotidienne)
+- Filtres par catégorie, par stratégie, tri par volume/PnL/trades/date
+
+**Fichiers modifiés (7) :**
+- `crates/engine/src/lib.rs` — +`pub mod profile` + re-exports
+- `crates/engine/src/leaderboard.rs` — mise à jour `make_position()` dans tests pour nouveaux champs TraderPosition
+- `crates/persistence/src/schema.rs` — +2 CREATE TABLE + 3 indexes
+- `crates/persistence/src/repository/mod.rs` — +`pub mod profile` + re-export
+- `crates/server/src/main.rs` — +`ProfileProgress` dans AppState, +4 endpoints
+- `src/lib/api.js` — +`startProfileAnalysis()`, `getProfileStatus()`, `cancelProfileAnalysis()`, `getProfileHistory()`
+- `src/App.svelte` — +import ProfileAnalysis + route `profile`
+- `src/components/Sidebar.svelte` — +item "Profile" (icone UserSearch, couleur purple)
+
+**Tests : 77 total (+10 nouveaux)** — `test_market_strategy_hold_to_resolution`, `test_market_strategy_accumulation`, `test_market_strategy_market_making`, `test_market_strategy_contrarian`, `test_market_strategy_dca`, `test_trade_grouping_by_market`, `test_category_breakdown`, `test_activity_timeline`, `test_global_strategy_inference`, `test_max_drawdown`
+
+---
 
 ### Web-Researched Polymarket Strategies (2026-02-09)
 

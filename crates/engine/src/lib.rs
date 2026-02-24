@@ -15,6 +15,7 @@ pub mod gabagool;
 pub mod indicators;
 pub mod leaderboard;
 pub mod optimizer;
+pub mod profile;
 pub mod strategy;
 pub mod types;
 pub mod watcher;
@@ -24,6 +25,7 @@ pub mod web_strategies;
 pub use api::BinanceClient;
 pub use api::PolymarketDataClient;
 pub use leaderboard::{analyze_leaderboard, LeaderboardProgress, LeaderboardStatus, TraderAnalysis};
+pub use profile::{analyze_profile, ProfileAnalysis, ProfileProgress, ProfileStatus};
 pub use watcher::{run_trade_watcher, TradeAlert, WatcherProgress, WatcherStatus};
 pub use discovery::{
     run_continuous_discovery, run_discovery, DiscoveryProgress, DiscoveryRequest, DiscoveryResult,

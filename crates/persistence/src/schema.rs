@@ -89,7 +89,58 @@ CREATE TABLE IF NOT EXISTS trader_trades (
     created_at INTEGER DEFAULT (strftime('%s', 'now'))
 );
 CREATE INDEX IF NOT EXISTS idx_trader_trades_wallet ON trader_trades(proxy_wallet, timestamp DESC);
-CREATE INDEX IF NOT EXISTS idx_trader_trades_hash ON trader_trades(trade_hash)
+CREATE INDEX IF NOT EXISTS idx_trader_trades_hash ON trader_trades(trade_hash);
+
+-- Profile analyses (user profile analysis results)
+CREATE TABLE IF NOT EXISTS profile_analyses (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    wallet TEXT NOT NULL,
+    username TEXT,
+    portfolio_value REAL DEFAULT 0,
+    total_pnl REAL DEFAULT 0,
+    total_volume REAL DEFAULT 0,
+    total_trades INTEGER DEFAULT 0,
+    unique_markets INTEGER DEFAULT 0,
+    win_rate REAL DEFAULT 0,
+    primary_strategy TEXT,
+    strategy_confidence REAL DEFAULT 0,
+    open_positions_json TEXT,
+    closed_positions_json TEXT,
+    markets_json TEXT,
+    category_breakdown_json TEXT,
+    activity_timeline_json TEXT,
+    strategy_signals_json TEXT,
+    avg_hold_duration REAL DEFAULT 0,
+    best_trade_pnl REAL DEFAULT 0,
+    worst_trade_pnl REAL DEFAULT 0,
+    max_drawdown REAL DEFAULT 0,
+    active_days INTEGER DEFAULT 0,
+    avg_position_size REAL DEFAULT 0,
+    analyzed_at INTEGER DEFAULT (strftime('%s', 'now')),
+    created_at TEXT DEFAULT CURRENT_TIMESTAMP,
+    UNIQUE(wallet)
+);
+CREATE INDEX IF NOT EXISTS idx_profile_wallet ON profile_analyses(wallet);
+
+-- Profile trades (all trades for analyzed profiles)
+CREATE TABLE IF NOT EXISTS profile_trades (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    wallet TEXT NOT NULL,
+    trade_hash TEXT NOT NULL UNIQUE,
+    side TEXT NOT NULL,
+    condition_id TEXT NOT NULL,
+    asset TEXT,
+    size REAL NOT NULL,
+    price REAL NOT NULL,
+    title TEXT,
+    outcome TEXT,
+    event_slug TEXT,
+    timestamp REAL NOT NULL,
+    transaction_hash TEXT,
+    created_at TEXT DEFAULT CURRENT_TIMESTAMP
+);
+CREATE INDEX IF NOT EXISTS idx_profile_trades_wallet ON profile_trades(wallet, timestamp DESC);
+CREATE INDEX IF NOT EXISTS idx_profile_trades_market ON profile_trades(wallet, condition_id)
 "#;
 
 /// SQL migrations to add new columns (idempotent — ignores "duplicate column" errors)

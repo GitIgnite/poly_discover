@@ -8,6 +8,7 @@
   import Playbook from './pages/Playbook.svelte';
   import Leaderboard from './pages/Leaderboard.svelte';
   import StrategyResearch from './pages/StrategyResearch.svelte';
+  import ProfileAnalysis from './pages/ProfileAnalysis.svelte';
   import { currentPage, serverHealth, discoveryStatus } from './lib/stores.js';
   import { checkHealth, getDiscoveryStatus } from './lib/api.js';
 
@@ -67,5 +68,7 @@
     <Leaderboard />
   {:else if $currentPage === 'strategy-research'}
     <StrategyResearch />
+  {:else if $currentPage === 'profile'}
+    <ProfileAnalysis />
   {/if}
 </Layout>

@@ -14,12 +14,12 @@ use axum::{
 use chrono::Utc;
 use clap::{Parser, Subcommand};
 use engine::{
-    analyze_leaderboard, run_continuous_discovery, run_discovery, run_optimization,
+    analyze_leaderboard, analyze_profile, run_continuous_discovery, run_discovery, run_optimization,
     run_trade_watcher, BinanceClient, DiscoveryProgress, DiscoveryRequest, DiscoveryResult,
     DiscoveryStatus, LeaderboardProgress, OptimizeProgress, OptimizeRequest, OptimizeStatus,
-    PolymarketDataClient, SizingMode, WatcherProgress,
+    PolymarketDataClient, ProfileProgress, ProfileStatus, SizingMode, WatcherProgress,
 };
-use persistence::repository::{DiscoveryRepository, LeaderboardRepository};
+use persistence::repository::{DiscoveryRepository, LeaderboardRepository, ProfileRepository};
 use rust_decimal::Decimal;
 use serde::Deserialize;
 use std::collections::HashMap;
@@ -91,6 +91,7 @@ struct AppState {
     optimize_progress: Arc<OptimizeProgress>,
     leaderboard_progress: Arc<LeaderboardProgress>,
     watcher_progress: Arc<WatcherProgress>,
+    profile_progress: Arc<ProfileProgress>,
 }
 
 fn init_logging(verbose: bool) {
@@ -167,6 +168,7 @@ async fn cmd_serve(host: &str, port: u16) -> anyhow::Result<()> {
         optimize_progress: Arc::new(OptimizeProgress::new()),
         leaderboard_progress: Arc::new(LeaderboardProgress::new()),
         watcher_progress: Arc::new(WatcherProgress::new()),
+        profile_progress: Arc::new(ProfileProgress::new()),
     };
 
     let cors = CorsLayer::new()
@@ -203,6 +205,10 @@ async fn cmd_serve(host: &str, port: u16) -> anyhow::Result<()> {
         .route("/watcher/stop", post(api_stop_watcher))
         .route("/watcher/status", get(api_watcher_status))
         .route("/strategies/catalog", get(api_strategies_catalog))
+        .route("/profile/analyze", post(api_start_profile_analysis))
+        .route("/profile/status", get(api_profile_status))
+        .route("/profile/cancel", post(api_cancel_profile_analysis))
+        .route("/profile/history", get(api_profile_history))
         .with_state(state);
 
     let app = Router::new()
@@ -233,6 +239,10 @@ async fn cmd_serve(host: &str, port: u16) -> anyhow::Result<()> {
     println!("  POST /api/watcher/stop        - Stop trade watcher");
     println!("  GET  /api/watcher/status      - Poll trade watcher status + alerts");
     println!("  GET  /api/strategies/catalog  - Web-researched strategies catalog");
+    println!("  POST /api/profile/analyze     - Analyze a Polymarket user profile");
+    println!("  GET  /api/profile/status      - Poll profile analysis progress");
+    println!("  POST /api/profile/cancel      - Cancel profile analysis");
+    println!("  GET  /api/profile/history     - List past profile analyses");
     println!("\n  Database: {}", db_path);
     println!("\nPress Ctrl+C to stop\n");
 
@@ -1088,6 +1098,121 @@ async fn api_strategies_catalog() -> Json<serde_json::Value> {
         "data": catalog,
         "total": catalog.len(),
     }))
+}
+
+// ============================================================================
+// Profile Analysis endpoints
+// ============================================================================
+
+#[derive(Deserialize)]
+struct ProfileAnalyzeRequest {
+    username: String,
+}
+
+async fn api_start_profile_analysis(
+    State(state): State<AppState>,
+    Json(body): Json<ProfileAnalyzeRequest>,
+) -> (StatusCode, Json<serde_json::Value>) {
+    let username = body.username.trim().to_string();
+    if username.is_empty() {
+        return (
+            StatusCode::BAD_REQUEST,
+            Json(serde_json::json!({ "error": "Username is required" })),
+        );
+    }
+
+    if state.profile_progress.is_running() {
+        return (
+            StatusCode::CONFLICT,
+            Json(serde_json::json!({ "error": "Profile analysis already running" })),
+        );
+    }
+
+    state.profile_progress.reset(&username);
+
+    let progress = Arc::clone(&state.profile_progress);
+    let client = Arc::clone(&state.polymarket);
+    let db_pool = state.db.pool_clone();
+
+    tokio::spawn(async move {
+        analyze_profile(
+            username,
+            &progress,
+            &client,
+            Some(db_pool),
+        )
+        .await;
+    });
+
+    (
+        StatusCode::OK,
+        Json(serde_json::json!({ "success": true, "message": "Profile analysis started" })),
+    )
+}
+
+async fn api_profile_status(
+    State(state): State<AppState>,
+) -> Json<serde_json::Value> {
+    let p = &state.profile_progress;
+    let status = *p.status.read().unwrap();
+    let completed = p.completed_steps.load(std::sync::atomic::Ordering::Relaxed);
+    let total = p.total_steps.load(std::sync::atomic::Ordering::Relaxed);
+    let current_step = p.current_step.read().unwrap().clone();
+    let username = p.username.read().unwrap().clone();
+    let wallet = p.wallet.read().unwrap().clone();
+    let error = p.error_message.read().unwrap().clone();
+
+    let mut response = serde_json::json!({
+        "status": format!("{:?}", status),
+        "completed_steps": completed,
+        "total_steps": total,
+        "current_step": current_step,
+        "username": username,
+        "wallet": wallet,
+        "running": p.is_running(),
+    });
+
+    if let Some(err) = error {
+        response["error"] = serde_json::json!(err);
+    }
+
+    if status == ProfileStatus::Complete {
+        if let Some(ref result) = *p.result.read().unwrap() {
+            response["result"] = serde_json::json!(result);
+        }
+    }
+
+    Json(response)
+}
+
+async fn api_cancel_profile_analysis(
+    State(state): State<AppState>,
+) -> Json<serde_json::Value> {
+    state
+        .profile_progress
+        .cancelled
+        .store(true, std::sync::atomic::Ordering::Relaxed);
+    Json(serde_json::json!({ "success": true, "message": "Cancellation requested" }))
+}
+
+async fn api_profile_history(
+    State(state): State<AppState>,
+) -> (StatusCode, Json<serde_json::Value>) {
+    let repo = ProfileRepository::new(state.db.pool());
+    match repo.get_all_analyses().await {
+        Ok(analyses) => (
+            StatusCode::OK,
+            Json(serde_json::json!({
+                "success": true,
+                "data": analyses,
+                "total": analyses.len(),
+            })),
+        ),
+        Err(e) => (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            Json(serde_json::json!({ "error": format!("DB error: {}", e) })),
+        ),
+    }
 }
 
 // ============================================================================

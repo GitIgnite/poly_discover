@@ -227,3 +227,42 @@ export async function getWatcherStatus() {
     return { status: 'Error', alerts: [], watched_count: 0 };
   }
 }
+
+// ============================================================================
+// Profile Analysis
+// ============================================================================
+
+export async function startProfileAnalysis(username) {
+  try {
+    return await apiCall('/api/profile/analyze', {
+      method: 'POST',
+      body: JSON.stringify({ username }),
+    });
+  } catch (e) {
+    return { success: false, message: String(e) };
+  }
+}
+
+export async function getProfileStatus() {
+  try {
+    return await apiCall('/api/profile/status');
+  } catch (e) {
+    return { status: 'Error', running: false };
+  }
+}
+
+export async function cancelProfileAnalysis() {
+  try {
+    return await apiCall('/api/profile/cancel', { method: 'POST' });
+  } catch (e) {
+    return { success: false, message: String(e) };
+  }
+}
+
+export async function getProfileHistory() {
+  try {
+    return await apiCall('/api/profile/history');
+  } catch (e) {
+    return { success: false, data: [], total: 0, error: String(e) };
+  }
+}
