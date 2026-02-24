@@ -1,6 +1,6 @@
 <script>
   import { Search, Database, Sparkles, Trophy, BookOpen, Crown, Globe, UserSearch, BarChart3, PanelLeftClose, PanelLeftOpen, Menu, X } from 'lucide-svelte';
-  import { currentPage, serverHealth, discoveryStatus } from '../lib/stores.js';
+  import { currentPage, serverHealth, discoveryStatus, orderbookStatus } from '../lib/stores.js';
 
   let collapsed = $state(false);
   let mobileOpen = $state(false);
@@ -114,6 +114,13 @@
                 <div class="ml-auto w-2 h-2 rounded-full bg-cyan-400 animate-pulse"></div>
               {/if}
             {/if}
+            {#if item.id === 'orderbook' && $orderbookStatus.running}
+              {#if collapsed}
+                <div class="absolute top-0.5 right-0.5 w-2 h-2 rounded-full bg-orange-400 animate-pulse"></div>
+              {:else}
+                <div class="ml-auto w-2 h-2 rounded-full bg-orange-400 animate-pulse"></div>
+              {/if}
+            {/if}
           </button>
         </li>
       {/each}
@@ -128,6 +135,17 @@
           <div class="text-[10px] text-gray-400">Discovery running...</div>
           <div class="text-xs text-cyan-400 font-bold">{$discoveryStatus.total_tested_all_cycles.toLocaleString()} tested</div>
           <div class="text-[10px] text-gray-500">Cycle {$discoveryStatus.current_cycle}</div>
+        {/if}
+      </div>
+    {/if}
+    {#if $orderbookStatus.running}
+      <div class="mt-2 px-2 py-2 bg-gray-700/50 rounded-lg">
+        {#if collapsed}
+          <div class="text-[10px] text-orange-400 font-bold text-center">{$orderbookStatus.markets_fetched.toLocaleString()}</div>
+        {:else}
+          <div class="text-[10px] text-gray-400">Orderbook running...</div>
+          <div class="text-xs text-orange-400 font-bold">{$orderbookStatus.markets_fetched.toLocaleString()} fetched</div>
+          <div class="text-[10px] text-gray-500">{$orderbookStatus.patterns_found} patterns</div>
         {/if}
       </div>
     {/if}

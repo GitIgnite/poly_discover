@@ -23,3 +23,13 @@ export const discoveryStatus = writable({
   best_so_far: [],
   results: [],
 });
+
+// Orderbook backtest status — persists across page changes
+export const orderbookStatus = writable({
+  running: false,
+  status: 'Idle',
+  current_step: '',
+  markets_fetched: 0,
+  features_extracted: 0,
+  patterns_found: 0,
+});

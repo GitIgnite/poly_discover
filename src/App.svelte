@@ -10,8 +10,8 @@
   import StrategyResearch from './pages/StrategyResearch.svelte';
   import ProfileAnalysis from './pages/ProfileAnalysis.svelte';
   import OrderbookAnalysis from './pages/OrderbookAnalysis.svelte';
-  import { currentPage, serverHealth, discoveryStatus } from './lib/stores.js';
-  import { checkHealth, getDiscoveryStatus } from './lib/api.js';
+  import { currentPage, serverHealth, discoveryStatus, orderbookStatus } from './lib/stores.js';
+  import { checkHealth, getDiscoveryStatus, getObBacktestStatus } from './lib/api.js';
 
   // Health check on mount and periodic
   async function updateHealth() {
@@ -44,13 +44,29 @@
     });
   }
 
-  // Poll immediately on startup, then every 2s
+  // Global orderbook backtest status polling
+  async function pollOrderbook() {
+    const status = await getObBacktestStatus();
+    orderbookStatus.set({
+      running: status.running || false,
+      status: status.status || 'Idle',
+      current_step: status.current_step || '',
+      markets_fetched: status.markets_fetched || 0,
+      features_extracted: status.features_extracted || 0,
+      patterns_found: status.patterns_found || 0,
+    });
+  }
+
+  // Poll immediately on startup, then every 30s
   pollDiscovery();
+  pollOrderbook();
   const discoveryInterval = setInterval(pollDiscovery, 30000);
+  const orderbookInterval = setInterval(pollOrderbook, 30000);
 
   onDestroy(() => {
     clearInterval(healthInterval);
     clearInterval(discoveryInterval);
+    clearInterval(orderbookInterval);
   });
 </script>
 
