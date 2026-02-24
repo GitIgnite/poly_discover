@@ -10,6 +10,17 @@ fn main() {
 
     println!("cargo:rustc-env=GIT_HASH={}", git_hash);
 
+    // Inject commit count as build number
+    let build_number = std::process::Command::new("git")
+        .args(["rev-list", "--count", "HEAD"])
+        .output()
+        .ok()
+        .and_then(|o| String::from_utf8(o.stdout).ok())
+        .map(|s| s.trim().to_string())
+        .unwrap_or_else(|| "0".to_string());
+
+    println!("cargo:rustc-env=BUILD_NUMBER={}", build_number);
+
     // Rebuild when HEAD changes (new commit)
     println!("cargo:rerun-if-changed=../../.git/HEAD");
     println!("cargo:rerun-if-changed=../../.git/refs/heads/");

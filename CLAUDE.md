@@ -417,6 +417,16 @@ Ports à ouvrir dans le Security Group EC2 :
 
 ## Historique des changements récents
 
+### Auto-increment version on each push (2026-02-24)
+
+**Version format changé** de `1.0.0-{git_hash}` vers `1.0.{commit_count}-{git_hash}`. Le commit count (`git rev-list --count HEAD`) s'incrémente automatiquement à chaque commit, donnant un numéro de build visible (ex: `1.0.34-af3f284` → `1.0.35-b1c2d3e`).
+
+**Fichiers modifiés (2) :**
+- `crates/server/build.rs` — ajout `git rev-list --count HEAD` → `BUILD_NUMBER` env var
+- `crates/server/src/main.rs` — `APP_VERSION` utilise `concat!("1.0.", env!("BUILD_NUMBER"), "-", env!("GIT_HASH"))`
+
+---
+
 ### Orderbook Backtest — Analyse des marchés BTC 15-min Polymarket (2026-02-24)
 
 **Nouvelle feature** : backtest historique des marchés BTC 15 minutes Polymarket. Découvre ~35K marchés via Gamma API, récupère les données de prix, extrait des features à 6 fenêtres temporelles (30/60/90/120/180/300s), et détecte des patterns statistiques (univariés, multivariés, séquentiels) pour prédire UP/DOWN. Inclut un collecteur live WebSocket pour enregistrer les orderbooks en temps réel.
