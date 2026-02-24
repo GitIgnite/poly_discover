@@ -205,7 +205,19 @@ pub async fn run_orderbook_backtest(
     progress.add_log("Discovering BTC 15-min markets via Gamma API...");
     info!("Orderbook backtest: discovering markets");
 
-    let markets = match client.get_all_btc_15min_markets().await {
+    let markets = match client
+        .get_all_btc_15min_markets(|total_found, offset| {
+            progress
+                .markets_discovered
+                .store(total_found as u32, Ordering::Relaxed);
+            progress.set_step(&format!(
+                "Discovering markets... {} found (page {})",
+                total_found,
+                offset / 100
+            ));
+        })
+        .await
+    {
         Ok(m) => m,
         Err(e) => {
             progress.set_error(format!("Market discovery failed: {}", e));
@@ -214,7 +226,7 @@ pub async fn run_orderbook_backtest(
     };
 
     info!(count = markets.len(), "Markets discovered");
-    progress.add_log(&format!("Found {} markets", markets.len()));
+    progress.add_log(&format!("Found {} BTC markets total", markets.len()));
     progress.markets_discovered.store(markets.len() as u32, Ordering::Relaxed);
 
     // Convert to DB records and save

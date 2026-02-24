@@ -699,15 +699,25 @@ impl PolymarketDataClient {
         Ok(markets)
     }
 
-    /// Auto-paginate: get ALL closed BTC 15-minute markets.
-    /// Filters client-side for questions containing bitcoin/btc and 15-min patterns.
-    pub async fn get_all_btc_15min_markets(&self) -> Result<Vec<GammaMarket>> {
+    /// Auto-paginate closed BTC short-term markets, searching newest-first.
+    /// Stops after `max_empty_pages` consecutive pages with no BTC markets,
+    /// or after collecting `max_markets` total.
+    /// `on_progress` is called after each page with (total_found, offset).
+    pub async fn get_all_btc_15min_markets(
+        &self,
+        on_progress: impl Fn(usize, u32),
+    ) -> Result<Vec<GammaMarket>> {
+        use tracing::info;
+
         let mut all_markets = Vec::new();
         let mut offset: u32 = 0;
         let page_limit: u32 = 100;
+        let max_markets: usize = 35_000;
+        let max_empty_pages: u32 = 50; // stop after 50 consecutive pages with 0 BTC markets
+        let mut consecutive_empty: u32 = 0;
 
         loop {
-            let page = self.search_btc_15min_markets(offset, page_limit).await?;
+            let page = self.search_markets(offset, page_limit, Some(true), true).await?;
             let page_len = page.len() as u32;
 
             // Client-side filter for BTC short-term markets
@@ -728,25 +738,60 @@ impl PolymarketDataClient {
                 })
                 .collect();
 
+            let found = filtered.len();
             all_markets.extend(filtered);
+
+            on_progress(all_markets.len(), offset);
+
+            if found == 0 {
+                consecutive_empty += 1;
+            } else {
+                consecutive_empty = 0;
+            }
+
+            // Log progress every 20 pages
+            if (offset / page_limit) % 20 == 0 {
+                info!(
+                    offset,
+                    total_found = all_markets.len(),
+                    page_found = found,
+                    consecutive_empty,
+                    "Discovering BTC markets..."
+                );
+            }
 
             if page_len < page_limit {
                 break;
             }
 
+            if all_markets.len() >= max_markets {
+                info!(total = all_markets.len(), "Reached max markets limit");
+                break;
+            }
+
+            if consecutive_empty >= max_empty_pages {
+                info!(
+                    offset,
+                    total = all_markets.len(),
+                    "Stopping: {} consecutive empty pages",
+                    max_empty_pages
+                );
+                break;
+            }
+
             offset += page_limit;
 
-            // Rate limit
-            tokio::time::sleep(std::time::Duration::from_millis(PAGINATION_DELAY_MS)).await;
+            // Rate limit (minimal for faster discovery)
+            tokio::time::sleep(std::time::Duration::from_millis(100)).await;
 
-            // Safety limit: don't paginate forever
-            if offset > 100_000 {
-                debug!("Reached safety pagination limit at offset {}", offset);
+            // Hard safety limit
+            if offset > 500_000 {
+                info!("Reached hard pagination limit at offset {}", offset);
                 break;
             }
         }
 
-        debug!(total = all_markets.len(), "BTC 15-min markets found");
+        info!(total = all_markets.len(), "BTC short-term markets found");
         Ok(all_markets)
     }
 
