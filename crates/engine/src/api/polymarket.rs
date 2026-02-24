@@ -653,33 +653,40 @@ impl PolymarketDataClient {
         DataSource::None
     }
 
-    /// Search for BTC 15-minute markets via Gamma API (single page).
-    /// `newest_first` reverses the sort order to get the most recent markets.
+    /// Search for BTC 15-minute markets via Gamma API (single page, closed only, default order).
     pub async fn search_btc_15min_markets(
         &self,
         offset: u32,
         limit: u32,
     ) -> Result<Vec<GammaMarket>> {
-        self.search_btc_15min_markets_order(offset, limit, false).await
+        self.search_markets(offset, limit, Some(true), false).await
     }
 
-    /// Search for BTC 15-minute markets via Gamma API (single page) with sort control.
-    pub async fn search_btc_15min_markets_order(
+    /// Generic market search via Gamma API.
+    /// - `closed`: `Some(true)` = closed only, `Some(false)` = active only, `None` = all.
+    /// - `newest_first`: sort by id descending.
+    pub async fn search_markets(
         &self,
         offset: u32,
         limit: u32,
+        closed: Option<bool>,
         newest_first: bool,
     ) -> Result<Vec<GammaMarket>> {
+        let closed_param = match closed {
+            Some(true) => "&closed=true",
+            Some(false) => "&closed=false",
+            None => "",
+        };
         let order_param = if newest_first {
             "&order=id&ascending=false"
         } else {
             ""
         };
         let url = format!(
-            "{}/markets?closed=true&limit={}&offset={}{}",
-            GAMMA_URL, limit, offset, order_param
+            "{}/markets?limit={}&offset={}{}{}",
+            GAMMA_URL, limit, offset, closed_param, order_param
         );
-        debug!("Searching BTC 15-min markets: {}", url);
+        debug!("Searching markets: {}", url);
 
         let resp = self.client.get(&url).send().await?;
         if !resp.status().is_success() {
@@ -703,16 +710,14 @@ impl PolymarketDataClient {
             let page = self.search_btc_15min_markets(offset, page_limit).await?;
             let page_len = page.len() as u32;
 
-            // Client-side filter for BTC 15-min markets
+            // Client-side filter for BTC short-term markets
+            // Questions look like: "Bitcoin Up or Down - February 25, 2:45PM-3:00PM ET"
             let filtered: Vec<GammaMarket> = page
                 .into_iter()
                 .filter(|m| {
                     if let Some(ref q) = m.question {
                         let q_lower = q.to_lowercase();
                         (q_lower.contains("bitcoin") || q_lower.contains("btc"))
-                            && (q_lower.contains("15 min")
-                                || q_lower.contains("15-min")
-                                || q_lower.contains("15min"))
                             && (q_lower.contains("up or down")
                                 || q_lower.contains("go up")
                                 || q_lower.contains("above")

@@ -515,30 +515,30 @@ pub async fn run_orderbook_backtest(
 // ---------------------------------------------------------------------------
 
 /// Returns (condition_id, optional first token_id) for probing.
-/// Searches newest-first to find a recent BTC 15-min market with clobTokenIds.
+/// Searches newest markets first (all states) — BTC 15-min markets are always near the top.
 async fn find_probe_market(client: &PolymarketDataClient) -> Option<(String, Option<String>)> {
-    // Search newest-first, paginate up to 5 pages of 100 to find a BTC 15-min market
+    // Search newest markets (any state) — BTC 15-min markets cycle every 15 min
+    // so they're always among the newest markets.
     for page in 0..5 {
         let offset = page * 100;
-        match client.search_btc_15min_markets_order(offset, 100, true).await {
+        match client.search_markets(offset, 100, None, true).await {
             Ok(markets) => {
                 if markets.is_empty() {
                     break;
                 }
                 for m in &markets {
-                    if let Some(ref q) = m.question {
-                        let q_lower = q.to_lowercase();
-                        if (q_lower.contains("bitcoin") || q_lower.contains("btc"))
-                            && (q_lower.contains("15 min")
-                                || q_lower.contains("15-min")
-                                || q_lower.contains("15min"))
-                        {
-                            if let Some(ref cid) = m.condition_id {
-                                let (token_up, _) = parse_clob_token_ids(m.clob_token_ids.as_deref());
-                                if token_up.is_some() {
-                                    info!(condition_id = %cid, token_id = ?token_up, question = ?q, "Found BTC 15-min probe market");
-                                    return Some((cid.clone(), token_up));
-                                }
+                    if is_btc_15min_question(m.question.as_deref()) {
+                        if let Some(ref cid) = m.condition_id {
+                            let (token_up, _) = parse_clob_token_ids(m.clob_token_ids.as_deref());
+                            if token_up.is_some() {
+                                info!(
+                                    condition_id = %cid,
+                                    token_id = ?token_up,
+                                    question = ?m.question,
+                                    closed = ?m.closed,
+                                    "Found BTC 15-min probe market"
+                                );
+                                return Some((cid.clone(), token_up));
                             }
                         }
                     }
@@ -554,6 +554,21 @@ async fn find_probe_market(client: &PolymarketDataClient) -> Option<(String, Opt
 
     warn!("Could not find a BTC 15-min market with token_id for probing");
     None
+}
+
+/// Check if a question matches the BTC short-term market pattern.
+/// Matches "Bitcoin Up or Down - February 25, 2:45PM-3:00PM ET" style questions.
+fn is_btc_15min_question(question: Option<&str>) -> bool {
+    if let Some(q) = question {
+        let q_lower = q.to_lowercase();
+        (q_lower.contains("bitcoin") || q_lower.contains("btc"))
+            && (q_lower.contains("up or down")
+                || q_lower.contains("go up")
+                || q_lower.contains("above")
+                || q_lower.contains("higher"))
+    } else {
+        false
+    }
 }
 
 fn gamma_market_to_record(m: &GammaMarket) -> Option<ObMarketRecord> {
