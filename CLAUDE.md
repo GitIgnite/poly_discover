@@ -37,7 +37,7 @@ Le dossier `docs/` contient la documentation essentielle du projet. **Consulter 
 ```bash
 cargo build                          # Debug build
 cargo build --release                # Release build
-cargo test --all                     # Run all workspace tests (77 tests)
+cargo test --all                     # Run all workspace tests (93 tests)
 cargo test -p engine                 # Tests for engine crate only
 cargo run -- serve --port 3001       # Start web server
 cargo run -- run --symbols BTCUSDT   # Run discovery headless (CLI mode, default 365 days)
@@ -78,12 +78,14 @@ crates/
 - `gabagool.rs` — Binary arbitrage backtest on synthetic Polymarket-style markets
 - `leaderboard.rs` — Leaderboard analyzer: fetch top traders, compute metrics, infer strategies, persist to DB
 - `watcher.rs` — Trade watcher: polls top trader wallets every 15s for new trades, generates alerts
+- `orderbook_backtest.rs` — Orderbook backtest engine: discovers BTC 15-min markets, fetches price data, extracts features at 6 time windows (30/60/90/120/180/300s), detects univariate/multivariate/sequence patterns
+- `orderbook_collector.rs` — Live WebSocket orderbook collector: connects to Polymarket CLOB WebSocket, records orderbook snapshots for active BTC 15-min markets
 - `profile.rs` — Profile Analyzer: deep analysis of a Polymarket user's trading activity (trade grouping by market, per-market strategy inference, category breakdown, activity timeline)
 - `web_strategies.rs` — Web-researched Polymarket strategies: static catalogue (12 entries), 5 backtestable SignalGenerators, param variants
 - `api/binance.rs` — Binance public klines API client
-- `api/polymarket.rs` — Polymarket Data API client (leaderboard, positions, trades, portfolio value, activity, closed positions, Gamma API for market metadata, username resolution, paginated fetching)
+- `api/polymarket.rs` — Polymarket Data API client (leaderboard, positions, trades, portfolio value, activity, closed positions, Gamma API for market metadata, username resolution, paginated fetching, CLOB API for prices-history/trades/orderbook, data source probing)
 
-**persistence** has 5 tables: `discovery_backtests` (30 columns), `leaderboard_traders` (17 columns), `trader_trades` (15 columns), `profile_analyses` (25 columns), `profile_trades` (13 columns). WAL mode, 5-connection pool. Migrations are idempotent (ALTER TABLE tolerates "duplicate column name"). Three repositories: `DiscoveryRepository`, `LeaderboardRepository`, and `ProfileRepository`.
+**persistence** has 10 tables: `discovery_backtests` (30 columns), `leaderboard_traders` (17 columns), `trader_trades` (15 columns), `profile_analyses` (25 columns), `profile_trades` (13 columns), `ob_markets` (15 columns), `ob_market_prices` (7 columns), `ob_market_features` (22 columns), `ob_snapshots` (15 columns), `ob_patterns` (20 columns). WAL mode, 5-connection pool. Migrations are idempotent (ALTER TABLE tolerates "duplicate column name"). Four repositories: `DiscoveryRepository`, `LeaderboardRepository`, `ProfileRepository`, and `OrderbookRepository`.
 
 **server** exposes REST endpoints and a CLI with two subcommands: `serve` (web server) and `run` (headless discovery).
 
@@ -92,7 +94,7 @@ crates/
 ```
 src/
 ├── App.svelte              Page router + global discovery polling (every 30s)
-├── lib/api.js              All backend HTTP calls (discover, cancel, knowledge, top-strategies, optimize, binance, leaderboard, watcher, strategies-catalog)
+├── lib/api.js              All backend HTTP calls (discover, cancel, knowledge, top-strategies, optimize, binance, leaderboard, watcher, strategies-catalog, orderbook)
 ├── lib/stores.js           Svelte writable stores (currentPage, serverHealth, discoveryStatus)
 ├── pages/
 │   ├── Discovery.svelte    Start/Stop button, reads global discoveryStatus store
@@ -102,7 +104,8 @@ src/
 │   ├── Optimizer.svelte    Parameter optimization UI
 │   ├── Leaderboard.svelte  Polymarket top traders analysis + strategy inference + trade watcher
 │   ├── StrategyResearch.svelte  Web-researched Polymarket strategies catalog (12 strategies, filterable)
-│   └── ProfileAnalysis.svelte   Deep user profile analysis by username (trades grouped by market, strategy inference)
+│   ├── ProfileAnalysis.svelte   Deep user profile analysis by username (trades grouped by market, strategy inference)
+│   └── OrderbookAnalysis.svelte Orderbook backtest: BTC 15-min market analysis, pattern detection, live collector
 └── components/
     ├── Layout.svelte       Main layout wrapper
     └── Sidebar.svelte      Navigation + discovery running indicator (pulse dot + counter)
@@ -119,7 +122,7 @@ Le statut discovery est géré au niveau **App.svelte** (pas dans Discovery.svel
 - **TopStrategies.svelte** : top 20 dédupliqué par `strategy_name`, auto-refresh 60s, podium top 3, badge LIVE
 - **Playbook.svelte** : top 3 par win rate (via `getTopStrategies(3, 'win_rate')`), tableau "Paramètres essentiels Polymarket" + "Guide d'implémentation bot" ultra-détaillé (7 sections en FR), bouton Copy
 - **KnowledgeBase.svelte** : auto-refresh toutes les 60s quand `$discoveryStatus.running === true`, badge LIVE
-- **Sidebar.svelte** : pulse dot animé + compteur quand discovery tourne (9 nav items: Discovery, Top 20, Playbook, Knowledge Base, Optimizer, Leaderboard, Strategies Web, Profile)
+- **Sidebar.svelte** : pulse dot animé + compteur quand discovery tourne (10 nav items: Discovery, Top 20, Playbook, Knowledge Base, Optimizer, Leaderboard, Strategies Web, Profile, Orderbook)
 
 ## Strategy Catalog
 
@@ -308,6 +311,15 @@ Le système utilise une estimation dynamique de probabilité basée sur le chang
 | GET | `/api/profile/status` | Poll profile analysis progress + result |
 | POST | `/api/profile/cancel` | Cancel running profile analysis |
 | GET | `/api/profile/history` | List past profile analyses from DB |
+| POST | `/api/orderbook/analyze` | Start orderbook backtest (BTC 15-min markets) |
+| GET | `/api/orderbook/status` | Poll orderbook backtest progress |
+| POST | `/api/orderbook/cancel` | Cancel orderbook backtest |
+| GET | `/api/orderbook/patterns` | Get detected patterns (filter by window) |
+| GET | `/api/orderbook/stats` | Get market/feature/pattern stats |
+| POST | `/api/orderbook/collector/start` | Start live WebSocket collector |
+| POST | `/api/orderbook/collector/stop` | Stop live collector |
+| GET | `/api/orderbook/collector/status` | Poll collector status |
+| POST | `/api/orderbook/cleanup` | Manual data purge |
 
 ## Testing
 
@@ -321,9 +333,11 @@ Unit tests exist in:
 - `crates/engine/src/leaderboard.rs` — 6 tests for metrics computation and strategy inference
 - `crates/engine/src/profile.rs` — 10 tests for market strategy inference, trade grouping, category breakdown, activity timeline, global strategy, max drawdown
 - `crates/engine/src/web_strategies.rs` — 8 tests for catalogue, signal generators, param variants
+- `crates/engine/src/orderbook_backtest.rs` — 13 tests for feature extraction, momentum, VWAP, pattern detection, confidence intervals, stability, outcome parsing
+- `crates/engine/src/orderbook_collector.rs` — 3 tests for book event parsing, collector progress
 
 ```bash
-cargo test --all                     # Run all 77 tests
+cargo test --all                     # Run all 93 tests
 cargo test -p engine -- fees         # Run fee-specific tests
 cargo test -p engine -- discovery    # Run discovery tests
 cargo test -p engine -- indicators   # Run indicator tests
@@ -332,6 +346,7 @@ cargo test -p engine -- dynamic_combo # Run DynamicCombo tests
 cargo test -p engine -- leaderboard  # Run leaderboard analyzer tests
 cargo test -p engine -- web_strategies # Run web strategies tests
 cargo test -p engine -- profile        # Run profile analyzer tests
+cargo test -p engine -- orderbook      # Run orderbook backtest + collector tests
 ```
 
 ## Déploiement AWS
@@ -401,6 +416,87 @@ Ports à ouvrir dans le Security Group EC2 :
 | 4000 | poly-discover |
 
 ## Historique des changements récents
+
+### Orderbook Backtest — Analyse des marchés BTC 15-min Polymarket (2026-02-24)
+
+**Nouvelle feature** : backtest historique des marchés BTC 15 minutes Polymarket. Découvre ~35K marchés via Gamma API, récupère les données de prix, extrait des features à 6 fenêtres temporelles (30/60/90/120/180/300s), et détecte des patterns statistiques (univariés, multivariés, séquentiels) pour prédire UP/DOWN. Inclut un collecteur live WebSocket pour enregistrer les orderbooks en temps réel.
+
+**Nouveau module `crates/engine/src/orderbook_backtest.rs` :**
+- `ObBacktestStatus` enum (8 variants : Idle, Probing, DiscoveringMarkets, FetchingData, ExtractingFeatures, DetectingPatterns, Cleanup, Complete, Error)
+- `ObBacktestProgress` struct — tracking multi-étapes avec counters atomiques
+- `ObBacktestStats` struct — stats agrégées (total marches, UP/DOWN, best accuracy)
+- `DetectedPattern` struct — pattern détecté avec accuracy, precision, recall, F1, IC 95%, stabilité
+- `run_orderbook_backtest()` — orchestrateur 6 étapes (probe → discover → fetch → extract → detect → cleanup)
+- `extract_features_for_market()` — extraction de features par fenêtre (last_price, VWAP, price_change, volatility, momentum, volume features)
+- `detect_univariate_patterns()` — test de seuils par percentile sur chaque feature
+- `detect_multivariate_patterns()` — combinaison des top features par paires
+- `detect_sequence_patterns()` — analyse de l'évolution T30→T60→T90→T120
+- `confidence_interval_95()` — intervalle de Wilson pour proportions binomiales
+- `compute_linear_regression_slope()` — pente de régression linéaire
+- `compute_vwap()` — VWAP pondéré par volume ou temps
+- 13 tests unitaires
+
+**Nouveau module `crates/engine/src/orderbook_collector.rs` :**
+- `CollectorStatus` enum (Idle, Connecting, Collecting, Reconnecting, Error)
+- `ObCollectorProgress` struct — tracking du collecteur live
+- `run_orderbook_collector()` — boucle principale WebSocket (détecte marché actif, subscribe, buffer + flush snapshots)
+- `parse_book_event()` — parse WebSocket book events en snapshots (bid/ask, spread, depth, imbalance)
+- 3 tests unitaires
+
+**Extension du client API `crates/engine/src/api/polymarket.rs` :**
+- `DataSource` enum (PricesHistory, ClobTrades, DataApiTrades, None)
+- `probe_best_data_source()` — test les 3 sources sur 1 marché connu
+- `search_btc_15min_markets()` / `get_all_btc_15min_markets()` — découverte paginée via Gamma API
+- `get_prices_history()` — CLOB prices-history endpoint
+- `try_get_market_trades()` — CLOB trades endpoint
+- `try_get_data_api_market_trades()` — Data API trades par marché
+- `get_orderbook()` — CLOB book endpoint
+- `get_active_btc_15min_market()` — recherche marché actif
+- Nouvelles structs : `PriceHistoryPoint`, `MarketTrade`, `OrderbookSnapshot`, `OrderbookLevel`
+
+**Nouveau fichier `crates/persistence/src/repository/orderbook.rs` :**
+- `ObMarketRecord`, `ObPriceRecord`, `ObFeatureRecord`, `ObSnapshotRecord`, `ObPatternRecord`
+- `ObMarketStats`, `DbSizeStats`
+- `OrderbookRepository` — save_markets_batch, get_unfetched_markets, mark_market_fetched, mark_features_extracted, save_prices_batch, get_prices_for_market, save_features_batch, get_all_features_for_window, get_features_grouped_by_market, save_snapshots_batch, save_patterns, get_top_patterns, get_patterns_by_window, purge_prices_for_extracted, purge_old_snapshots, get_db_size_stats, get_market_stats
+
+**5 nouvelles tables DB :**
+- `ob_markets` (15 colonnes) — marchés BTC 15-min (permanent, ~35K lignes)
+- `ob_market_prices` (7 colonnes) — données prix (purgeable après extraction features)
+- `ob_market_features` (22 colonnes) — features extraites par fenêtre (permanent, ~210K lignes)
+- `ob_snapshots` (15 colonnes) — snapshots live orderbook (rétention 30 jours)
+- `ob_patterns` (20 colonnes) — patterns détectés (permanent)
+
+**9 nouveaux endpoints server :**
+- `POST /api/orderbook/analyze` — lancer le backtest historique
+- `GET /api/orderbook/status` — polling progression
+- `POST /api/orderbook/cancel` — annuler backtest
+- `GET /api/orderbook/patterns` — patterns détectés (filtre par window)
+- `GET /api/orderbook/stats` — stats marches/features
+- `POST /api/orderbook/collector/start` — démarrer collecteur live
+- `POST /api/orderbook/collector/stop` — arrêter collecteur
+- `GET /api/orderbook/collector/status` — status collecteur
+- `POST /api/orderbook/cleanup` — purge manuelle
+
+**Nouveau fichier frontend `src/pages/OrderbookAnalysis.svelte` :**
+- Section Backtest Historique : bouton Analyser, barre de progression multi-étapes, compteurs live
+- Section Patterns Détectés : tableau avec filtres par fenêtre et type, badges couleur accuracy
+- Section Collecteur Live : Start/Stop, badge LIVE, compteurs snapshots
+- Section Base de données : row counts par table, bouton Purge
+
+**Fichiers modifiés (9) :**
+- `crates/engine/Cargo.toml` — +tokio-tungstenite, futures-util
+- `crates/engine/src/lib.rs` — +`pub mod orderbook_backtest`, `pub mod orderbook_collector` + re-exports
+- `crates/engine/src/api/polymarket.rs` — +CLOB_URL, +DataSource, +PriceHistoryPoint, +MarketTrade, +OrderbookSnapshot, +7 méthodes
+- `crates/persistence/src/schema.rs` — +5 CREATE TABLE + 3 indexes
+- `crates/persistence/src/repository/mod.rs` — +`pub mod orderbook` + re-export
+- `crates/server/src/main.rs` — +ObBacktestProgress/ObCollectorProgress dans AppState, +9 endpoints
+- `src/lib/api.js` — +9 fonctions API (startObBacktest, getObBacktestStatus, cancelObBacktest, getObPatterns, getObStats, startObCollector, stopObCollector, getObCollectorStatus, obCleanup)
+- `src/App.svelte` — +import OrderbookAnalysis + route `orderbook`
+- `src/components/Sidebar.svelte` — +item "Orderbook" (icone BarChart3, couleur orange)
+
+**Tests : 93 total (+16 nouveaux)** — `test_extract_features_basic`, `test_extract_features_empty_window`, `test_extract_features_single_point`, `test_compute_momentum_upward`, `test_compute_momentum_flat`, `test_compute_vwap`, `test_univariate_pattern_detection`, `test_multivariate_pattern_detection`, `test_sequence_pattern_detection`, `test_confidence_interval_95`, `test_stability_score`, `test_progress_new_is_idle`, `test_parse_market_outcome`, `test_parse_book_event`, `test_parse_book_event_invalid`, `test_collector_progress_new`
+
+---
 
 ### Profile Analyzer — Analyse complète d'un profil Polymarket par username (2026-02-24)
 

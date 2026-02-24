@@ -15,6 +15,8 @@ pub mod gabagool;
 pub mod indicators;
 pub mod leaderboard;
 pub mod optimizer;
+pub mod orderbook_backtest;
+pub mod orderbook_collector;
 pub mod profile;
 pub mod strategy;
 pub mod types;
@@ -44,3 +46,9 @@ pub use optimizer::{
 pub use strategy::{RsiStrategy, Signal};
 pub use types::*;
 pub use web_strategies::{get_catalog, WebStrategyCatalogEntry, WebStrategyId, WebStrategyParams};
+pub use orderbook_backtest::{
+    run_orderbook_backtest, DetectedPattern, ObBacktestProgress, ObBacktestStats, ObBacktestStatus,
+};
+pub use orderbook_collector::{
+    run_orderbook_collector, CollectorStatus, ObCollectorProgress,
+};

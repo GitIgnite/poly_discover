@@ -266,3 +266,83 @@ export async function getProfileHistory() {
     return { success: false, data: [], total: 0, error: String(e) };
   }
 }
+
+// ============================================================================
+// Orderbook Backtest
+// ============================================================================
+
+export async function startObBacktest() {
+  try {
+    return await apiCall('/api/orderbook/analyze', { method: 'POST' });
+  } catch (e) {
+    return { success: false, message: String(e) };
+  }
+}
+
+export async function getObBacktestStatus() {
+  try {
+    return await apiCall('/api/orderbook/status');
+  } catch (e) {
+    return { status: 'Error', running: false };
+  }
+}
+
+export async function cancelObBacktest() {
+  try {
+    return await apiCall('/api/orderbook/cancel', { method: 'POST' });
+  } catch (e) {
+    return { success: false, message: String(e) };
+  }
+}
+
+export async function getObPatterns(params = {}) {
+  try {
+    const query = new URLSearchParams();
+    if (params.limit) query.set('limit', params.limit);
+    if (params.window) query.set('window', params.window);
+    const qs = query.toString();
+    return await apiCall(`/api/orderbook/patterns${qs ? '?' + qs : ''}`);
+  } catch (e) {
+    return { success: false, data: [], total: 0, error: String(e) };
+  }
+}
+
+export async function getObStats() {
+  try {
+    return await apiCall('/api/orderbook/stats');
+  } catch (e) {
+    return { success: false, market_stats: {}, db_size: {} };
+  }
+}
+
+export async function startObCollector() {
+  try {
+    return await apiCall('/api/orderbook/collector/start', { method: 'POST' });
+  } catch (e) {
+    return { success: false, message: String(e) };
+  }
+}
+
+export async function stopObCollector() {
+  try {
+    return await apiCall('/api/orderbook/collector/stop', { method: 'POST' });
+  } catch (e) {
+    return { success: false, message: String(e) };
+  }
+}
+
+export async function getObCollectorStatus() {
+  try {
+    return await apiCall('/api/orderbook/collector/status');
+  } catch (e) {
+    return { status: 'Error', running: false };
+  }
+}
+
+export async function obCleanup() {
+  try {
+    return await apiCall('/api/orderbook/cleanup', { method: 'POST' });
+  } catch (e) {
+    return { success: false, message: String(e) };
+  }
+}

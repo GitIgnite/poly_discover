@@ -9,6 +9,7 @@
   import Leaderboard from './pages/Leaderboard.svelte';
   import StrategyResearch from './pages/StrategyResearch.svelte';
   import ProfileAnalysis from './pages/ProfileAnalysis.svelte';
+  import OrderbookAnalysis from './pages/OrderbookAnalysis.svelte';
   import { currentPage, serverHealth, discoveryStatus } from './lib/stores.js';
   import { checkHealth, getDiscoveryStatus } from './lib/api.js';
 
@@ -70,5 +71,7 @@
     <StrategyResearch />
   {:else if $currentPage === 'profile'}
     <ProfileAnalysis />
+  {:else if $currentPage === 'orderbook'}
+    <OrderbookAnalysis />
   {/if}
 </Layout>

@@ -140,7 +140,115 @@ CREATE TABLE IF NOT EXISTS profile_trades (
     created_at TEXT DEFAULT CURRENT_TIMESTAMP
 );
 CREATE INDEX IF NOT EXISTS idx_profile_trades_wallet ON profile_trades(wallet, timestamp DESC);
-CREATE INDEX IF NOT EXISTS idx_profile_trades_market ON profile_trades(wallet, condition_id)
+CREATE INDEX IF NOT EXISTS idx_profile_trades_market ON profile_trades(wallet, condition_id);
+
+-- ========== ORDERBOOK BACKTEST TABLES ==========
+
+-- BTC 15-min markets discovered from Polymarket (permanent)
+CREATE TABLE IF NOT EXISTS ob_markets (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    condition_id TEXT NOT NULL UNIQUE,
+    question TEXT,
+    slug TEXT,
+    token_id_up TEXT,
+    token_id_down TEXT,
+    start_time INTEGER NOT NULL,
+    end_time INTEGER NOT NULL,
+    outcome TEXT,
+    outcome_price_up REAL,
+    outcome_price_down REAL,
+    volume REAL DEFAULT 0,
+    data_fetched INTEGER DEFAULT 0,
+    data_points_count INTEGER DEFAULT 0,
+    created_at INTEGER DEFAULT (strftime('%s','now'))
+);
+
+-- Market price/trade data (purgeable after feature extraction)
+CREATE TABLE IF NOT EXISTS ob_market_prices (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    market_id INTEGER NOT NULL,
+    timestamp_ms INTEGER NOT NULL,
+    elapsed_seconds REAL NOT NULL,
+    price REAL NOT NULL,
+    side TEXT,
+    size REAL,
+    UNIQUE(market_id, timestamp_ms)
+);
+CREATE INDEX IF NOT EXISTS idx_ob_prices_market ON ob_market_prices(market_id, elapsed_seconds);
+
+-- Extracted features per market per time window (permanent)
+CREATE TABLE IF NOT EXISTS ob_market_features (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    market_id INTEGER NOT NULL,
+    time_window INTEGER NOT NULL,
+    last_price REAL,
+    vwap REAL,
+    price_change REAL,
+    price_volatility REAL,
+    momentum REAL,
+    max_price REAL,
+    min_price REAL,
+    price_range REAL,
+    data_points INTEGER,
+    buy_volume REAL,
+    sell_volume REAL,
+    volume_imbalance REAL,
+    trade_count INTEGER,
+    avg_trade_size REAL,
+    large_trade_ratio REAL,
+    avg_spread REAL,
+    depth_imbalance REAL,
+    avg_bid_depth REAL,
+    avg_ask_depth REAL,
+    outcome_is_up INTEGER,
+    UNIQUE(market_id, time_window)
+);
+
+-- Live orderbook snapshots (retention 30 days)
+CREATE TABLE IF NOT EXISTS ob_snapshots (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    condition_id TEXT NOT NULL,
+    token_id TEXT NOT NULL,
+    timestamp_ms INTEGER NOT NULL,
+    elapsed_seconds REAL NOT NULL,
+    best_bid REAL,
+    best_ask REAL,
+    spread REAL,
+    mid_price REAL,
+    bid_depth_total REAL,
+    ask_depth_total REAL,
+    depth_imbalance REAL,
+    bid_levels INTEGER,
+    ask_levels INTEGER,
+    created_at INTEGER DEFAULT (strftime('%s','now'))
+);
+CREATE INDEX IF NOT EXISTS idx_ob_snap_cid ON ob_snapshots(condition_id, timestamp_ms);
+CREATE INDEX IF NOT EXISTS idx_ob_snap_created ON ob_snapshots(created_at);
+
+-- Detected patterns from statistical analysis (permanent)
+CREATE TABLE IF NOT EXISTS ob_patterns (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    pattern_name TEXT NOT NULL,
+    pattern_type TEXT NOT NULL,
+    time_window INTEGER NOT NULL,
+    direction TEXT NOT NULL,
+    features_used TEXT NOT NULL,
+    threshold_json TEXT NOT NULL,
+    accuracy REAL NOT NULL,
+    precision_pct REAL,
+    recall_pct REAL,
+    f1_score REAL,
+    sample_size INTEGER NOT NULL,
+    up_count INTEGER NOT NULL,
+    down_count INTEGER NOT NULL,
+    confidence_95_low REAL,
+    confidence_95_high REAL,
+    first_half_accuracy REAL,
+    second_half_accuracy REAL,
+    stability_score REAL,
+    analysis_run_id TEXT,
+    created_at INTEGER DEFAULT (strftime('%s','now'))
+)
 "#;
 
 /// SQL migrations to add new columns (idempotent — ignores "duplicate column" errors)

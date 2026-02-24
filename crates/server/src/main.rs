@@ -15,11 +15,15 @@ use chrono::Utc;
 use clap::{Parser, Subcommand};
 use engine::{
     analyze_leaderboard, analyze_profile, run_continuous_discovery, run_discovery, run_optimization,
-    run_trade_watcher, BinanceClient, DiscoveryProgress, DiscoveryRequest, DiscoveryResult,
-    DiscoveryStatus, LeaderboardProgress, OptimizeProgress, OptimizeRequest, OptimizeStatus,
-    PolymarketDataClient, ProfileProgress, ProfileStatus, SizingMode, WatcherProgress,
+    run_orderbook_backtest, run_orderbook_collector, run_trade_watcher, BinanceClient,
+    DiscoveryProgress, DiscoveryRequest, DiscoveryResult, DiscoveryStatus,
+    LeaderboardProgress, ObBacktestProgress, ObCollectorProgress,
+    OptimizeProgress, OptimizeRequest, OptimizeStatus, PolymarketDataClient, ProfileProgress,
+    ProfileStatus, SizingMode, WatcherProgress,
 };
-use persistence::repository::{DiscoveryRepository, LeaderboardRepository, ProfileRepository};
+use persistence::repository::{
+    DiscoveryRepository, LeaderboardRepository, OrderbookRepository, ProfileRepository,
+};
 use rust_decimal::Decimal;
 use serde::Deserialize;
 use std::collections::HashMap;
@@ -92,6 +96,8 @@ struct AppState {
     leaderboard_progress: Arc<LeaderboardProgress>,
     watcher_progress: Arc<WatcherProgress>,
     profile_progress: Arc<ProfileProgress>,
+    ob_backtest_progress: Arc<ObBacktestProgress>,
+    ob_collector_progress: Arc<ObCollectorProgress>,
 }
 
 fn init_logging(verbose: bool) {
@@ -169,6 +175,8 @@ async fn cmd_serve(host: &str, port: u16) -> anyhow::Result<()> {
         leaderboard_progress: Arc::new(LeaderboardProgress::new()),
         watcher_progress: Arc::new(WatcherProgress::new()),
         profile_progress: Arc::new(ProfileProgress::new()),
+        ob_backtest_progress: Arc::new(ObBacktestProgress::new()),
+        ob_collector_progress: Arc::new(ObCollectorProgress::new()),
     };
 
     let cors = CorsLayer::new()
@@ -209,6 +217,15 @@ async fn cmd_serve(host: &str, port: u16) -> anyhow::Result<()> {
         .route("/profile/status", get(api_profile_status))
         .route("/profile/cancel", post(api_cancel_profile_analysis))
         .route("/profile/history", get(api_profile_history))
+        .route("/orderbook/analyze", post(api_start_ob_backtest))
+        .route("/orderbook/status", get(api_ob_backtest_status))
+        .route("/orderbook/cancel", post(api_cancel_ob_backtest))
+        .route("/orderbook/patterns", get(api_ob_patterns))
+        .route("/orderbook/stats", get(api_ob_stats))
+        .route("/orderbook/collector/start", post(api_start_ob_collector))
+        .route("/orderbook/collector/stop", post(api_stop_ob_collector))
+        .route("/orderbook/collector/status", get(api_ob_collector_status))
+        .route("/orderbook/cleanup", post(api_ob_cleanup))
         .with_state(state);
 
     let app = Router::new()
@@ -243,6 +260,15 @@ async fn cmd_serve(host: &str, port: u16) -> anyhow::Result<()> {
     println!("  GET  /api/profile/status      - Poll profile analysis progress");
     println!("  POST /api/profile/cancel      - Cancel profile analysis");
     println!("  GET  /api/profile/history     - List past profile analyses");
+    println!("  POST /api/orderbook/analyze  - Start orderbook backtest analysis");
+    println!("  GET  /api/orderbook/status   - Poll orderbook backtest progress");
+    println!("  POST /api/orderbook/cancel   - Cancel orderbook backtest");
+    println!("  GET  /api/orderbook/patterns - Get detected patterns");
+    println!("  GET  /api/orderbook/stats    - Get orderbook analysis stats");
+    println!("  POST /api/orderbook/collector/start  - Start live collector");
+    println!("  POST /api/orderbook/collector/stop   - Stop live collector");
+    println!("  GET  /api/orderbook/collector/status  - Poll collector status");
+    println!("  POST /api/orderbook/cleanup  - Manual data cleanup");
     println!("\n  Database: {}", db_path);
     println!("\nPress Ctrl+C to stop\n");
 
@@ -1213,6 +1239,222 @@ async fn api_profile_history(
             Json(serde_json::json!({ "error": format!("DB error: {}", e) })),
         ),
     }
+}
+
+// ============================================================================
+// Orderbook Backtest Analysis
+// ============================================================================
+
+async fn api_start_ob_backtest(
+    State(state): State<AppState>,
+) -> (StatusCode, Json<serde_json::Value>) {
+    if state.ob_backtest_progress.is_running() {
+        return (
+            StatusCode::CONFLICT,
+            Json(serde_json::json!({ "error": "Orderbook backtest already running" })),
+        );
+    }
+
+    state.ob_backtest_progress.reset();
+
+    let progress = Arc::clone(&state.ob_backtest_progress);
+    let client = Arc::clone(&state.polymarket);
+    let db_pool = state.db.pool_clone();
+
+    tokio::spawn(async move {
+        run_orderbook_backtest(&progress, &client, db_pool).await;
+    });
+
+    (
+        StatusCode::OK,
+        Json(serde_json::json!({ "success": true, "message": "Orderbook backtest started" })),
+    )
+}
+
+async fn api_ob_backtest_status(
+    State(state): State<AppState>,
+) -> Json<serde_json::Value> {
+    let p = &state.ob_backtest_progress;
+    let status = *p.status.read().unwrap();
+    let data_source = *p.data_source.read().unwrap();
+    let current_step = p.current_step.read().unwrap().clone();
+    let error = p.error_message.read().unwrap().clone();
+    let patterns = p.best_patterns.read().unwrap().clone();
+    let stats = p.stats.read().unwrap().clone();
+
+    let mut response = serde_json::json!({
+        "status": format!("{:?}", status),
+        "data_source": format!("{}", data_source),
+        "running": p.is_running(),
+        "current_step": current_step,
+        "total_markets": p.total_markets.load(std::sync::atomic::Ordering::Relaxed),
+        "markets_discovered": p.markets_discovered.load(std::sync::atomic::Ordering::Relaxed),
+        "markets_fetched": p.markets_fetched.load(std::sync::atomic::Ordering::Relaxed),
+        "features_extracted": p.features_extracted.load(std::sync::atomic::Ordering::Relaxed),
+        "patterns_found": p.patterns_found.load(std::sync::atomic::Ordering::Relaxed),
+        "stats": stats,
+    });
+
+    if !patterns.is_empty() {
+        response["best_patterns"] = serde_json::json!(patterns);
+    }
+
+    if let Some(err) = error {
+        response["error"] = serde_json::json!(err);
+    }
+
+    Json(response)
+}
+
+async fn api_cancel_ob_backtest(
+    State(state): State<AppState>,
+) -> Json<serde_json::Value> {
+    state
+        .ob_backtest_progress
+        .cancelled
+        .store(true, std::sync::atomic::Ordering::Relaxed);
+    Json(serde_json::json!({ "success": true, "message": "Cancellation requested" }))
+}
+
+async fn api_ob_patterns(
+    State(state): State<AppState>,
+    Query(params): Query<HashMap<String, String>>,
+) -> (StatusCode, Json<serde_json::Value>) {
+    let limit = params
+        .get("limit")
+        .and_then(|v| v.parse::<i64>().ok())
+        .unwrap_or(50);
+    let window = params
+        .get("window")
+        .and_then(|v| v.parse::<i64>().ok());
+
+    let result = if let Some(w) = window {
+        OrderbookRepository::get_patterns_by_window(state.db.pool(), w).await
+    } else {
+        OrderbookRepository::get_top_patterns(state.db.pool(), limit).await
+    };
+
+    match result {
+        Ok(patterns) => (
+            StatusCode::OK,
+            Json(serde_json::json!({
+                "success": true,
+                "data": patterns,
+                "total": patterns.len(),
+            })),
+        ),
+        Err(e) => (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            Json(serde_json::json!({ "error": format!("DB error: {}", e) })),
+        ),
+    }
+}
+
+async fn api_ob_stats(
+    State(state): State<AppState>,
+) -> (StatusCode, Json<serde_json::Value>) {
+    let market_stats = OrderbookRepository::get_market_stats(state.db.pool())
+        .await
+        .unwrap_or_default();
+    let size_stats = OrderbookRepository::get_db_size_stats(state.db.pool())
+        .await
+        .unwrap_or_default();
+
+    (
+        StatusCode::OK,
+        Json(serde_json::json!({
+            "success": true,
+            "market_stats": market_stats,
+            "db_size": size_stats,
+        })),
+    )
+}
+
+// ============================================================================
+// Orderbook Collector (Live WebSocket)
+// ============================================================================
+
+async fn api_start_ob_collector(
+    State(state): State<AppState>,
+) -> (StatusCode, Json<serde_json::Value>) {
+    if state.ob_collector_progress.is_running() {
+        return (
+            StatusCode::CONFLICT,
+            Json(serde_json::json!({ "error": "Collector already running" })),
+        );
+    }
+
+    state.ob_collector_progress.reset();
+
+    let progress = Arc::clone(&state.ob_collector_progress);
+    let client = Arc::clone(&state.polymarket);
+    let db_pool = state.db.pool_clone();
+
+    tokio::spawn(async move {
+        run_orderbook_collector(&progress, &client, db_pool).await;
+    });
+
+    (
+        StatusCode::OK,
+        Json(serde_json::json!({ "success": true, "message": "Collector started" })),
+    )
+}
+
+async fn api_stop_ob_collector(
+    State(state): State<AppState>,
+) -> Json<serde_json::Value> {
+    state
+        .ob_collector_progress
+        .cancelled
+        .store(true, std::sync::atomic::Ordering::Relaxed);
+    Json(serde_json::json!({ "success": true, "message": "Collector stop requested" }))
+}
+
+async fn api_ob_collector_status(
+    State(state): State<AppState>,
+) -> Json<serde_json::Value> {
+    let p = &state.ob_collector_progress;
+    let status = *p.status.read().unwrap();
+    let current_market = p.current_market.read().unwrap().clone();
+    let last_snapshot = p.last_snapshot_time.read().unwrap().clone();
+    let error = p.error_message.read().unwrap().clone();
+
+    let mut response = serde_json::json!({
+        "status": format!("{:?}", status),
+        "running": p.is_running(),
+        "markets_watched": p.markets_watched.load(std::sync::atomic::Ordering::Relaxed),
+        "snapshots_recorded": p.snapshots_recorded.load(std::sync::atomic::Ordering::Relaxed),
+        "current_market": current_market,
+        "last_snapshot_time": last_snapshot,
+    });
+
+    if let Some(err) = error {
+        response["error"] = serde_json::json!(err);
+    }
+
+    Json(response)
+}
+
+async fn api_ob_cleanup(
+    State(state): State<AppState>,
+) -> (StatusCode, Json<serde_json::Value>) {
+    let pool = state.db.pool();
+
+    let prices_purged = OrderbookRepository::purge_prices_for_extracted(pool)
+        .await
+        .unwrap_or(0);
+    let snapshots_purged = OrderbookRepository::purge_old_snapshots(pool, 30)
+        .await
+        .unwrap_or(0);
+
+    (
+        StatusCode::OK,
+        Json(serde_json::json!({
+            "success": true,
+            "prices_purged": prices_purged,
+            "snapshots_purged": snapshots_purged,
+        })),
+    )
 }
 
 // ============================================================================

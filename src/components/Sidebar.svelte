@@ -1,5 +1,5 @@
 <script>
-  import { Search, Database, Sparkles, Trophy, BookOpen, Crown, Globe, UserSearch, PanelLeftClose, PanelLeftOpen, Menu, X } from 'lucide-svelte';
+  import { Search, Database, Sparkles, Trophy, BookOpen, Crown, Globe, UserSearch, BarChart3, PanelLeftClose, PanelLeftOpen, Menu, X } from 'lucide-svelte';
   import { currentPage, serverHealth, discoveryStatus } from '../lib/stores.js';
 
   let collapsed = $state(false);
@@ -14,6 +14,7 @@
     { id: 'leaderboard', label: 'Leaderboard', icon: Crown, color: 'rose' },
     { id: 'strategy-research', label: 'Strategies Web', icon: Globe, color: 'sky' },
     { id: 'profile', label: 'Profile', icon: UserSearch, color: 'purple' },
+    { id: 'orderbook', label: 'Orderbook', icon: BarChart3, color: 'orange' },
   ];
 
   const colorMap = {
@@ -25,6 +26,7 @@
     rose: { active: 'bg-rose-600 text-white', dot: 'bg-rose-400' },
     sky: { active: 'bg-sky-600 text-white', dot: 'bg-sky-400' },
     purple: { active: 'bg-purple-600 text-white', dot: 'bg-purple-400' },
+    orange: { active: 'bg-orange-600 text-white', dot: 'bg-orange-400' },
   };
 
   function navigate(pageId) {

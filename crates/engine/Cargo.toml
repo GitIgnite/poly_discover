@@ -20,6 +20,8 @@ thiserror = { workspace = true }
 ta = { workspace = true }
 async-trait = { workspace = true }
 rand = { workspace = true }
+tokio-tungstenite = { version = "0.24", features = ["native-tls"] }
+futures-util = "0.3"
 
 [dev-dependencies]
 rust_decimal_macros = { workspace = true }
