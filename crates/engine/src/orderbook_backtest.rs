@@ -174,10 +174,10 @@ pub async fn run_orderbook_backtest(
 
     // Use a known BTC 15-min market condition_id for probing
     // We'll try to discover one first, then probe with it
-    let probe_market = match find_probe_market(client).await {
-        Some(m) => {
-            progress.add_log(&format!("Probe market found: {}", m));
-            m
+    let (probe_condition_id, probe_token_id) = match find_probe_market(client).await {
+        Some((cid, tid)) => {
+            progress.add_log(&format!("Probe market found: {} (token: {:?})", cid, tid));
+            (cid, tid)
         }
         None => {
             progress.set_error("Could not find any BTC 15-min market for probing".into());
@@ -185,7 +185,9 @@ pub async fn run_orderbook_backtest(
         }
     };
 
-    let data_source = client.probe_best_data_source(&probe_market).await;
+    let data_source = client
+        .probe_best_data_source(&probe_condition_id, probe_token_id.as_deref())
+        .await;
     *progress.data_source.write().unwrap() = data_source;
     progress.add_log(&format!("Best data source: {}", data_source));
     info!("Best data source: {}", data_source);
@@ -274,9 +276,16 @@ pub async fn run_orderbook_backtest(
                 total
             ));
 
+            // For PricesHistory, use token_id; for trades, use condition_id
+            let fetch_id = if data_source == DataSource::PricesHistory {
+                market.token_id_up.as_deref().unwrap_or(&market.condition_id)
+            } else {
+                &market.condition_id
+            };
+
             let prices = fetch_market_data(
                 client,
-                &market.condition_id,
+                fetch_id,
                 market.start_time,
                 market.end_time,
                 data_source,
@@ -505,34 +514,46 @@ pub async fn run_orderbook_backtest(
 // Helpers
 // ---------------------------------------------------------------------------
 
-async fn find_probe_market(client: &PolymarketDataClient) -> Option<String> {
-    // Try to find one closed BTC 15-min market for probing
-    match client.search_btc_15min_markets(0, 20).await {
-        Ok(markets) => {
-            for m in &markets {
-                if let Some(ref q) = m.question {
-                    let q_lower = q.to_lowercase();
-                    if (q_lower.contains("bitcoin") || q_lower.contains("btc"))
-                        && (q_lower.contains("15 min")
-                            || q_lower.contains("15-min")
-                            || q_lower.contains("15min"))
-                    {
-                        if let Some(ref cid) = m.condition_id {
-                            return Some(cid.clone());
+/// Returns (condition_id, optional first token_id) for probing.
+/// Searches newest-first to find a recent BTC 15-min market with clobTokenIds.
+async fn find_probe_market(client: &PolymarketDataClient) -> Option<(String, Option<String>)> {
+    // Search newest-first, paginate up to 5 pages of 100 to find a BTC 15-min market
+    for page in 0..5 {
+        let offset = page * 100;
+        match client.search_btc_15min_markets_order(offset, 100, true).await {
+            Ok(markets) => {
+                if markets.is_empty() {
+                    break;
+                }
+                for m in &markets {
+                    if let Some(ref q) = m.question {
+                        let q_lower = q.to_lowercase();
+                        if (q_lower.contains("bitcoin") || q_lower.contains("btc"))
+                            && (q_lower.contains("15 min")
+                                || q_lower.contains("15-min")
+                                || q_lower.contains("15min"))
+                        {
+                            if let Some(ref cid) = m.condition_id {
+                                let (token_up, _) = parse_clob_token_ids(m.clob_token_ids.as_deref());
+                                if token_up.is_some() {
+                                    info!(condition_id = %cid, token_id = ?token_up, question = ?q, "Found BTC 15-min probe market");
+                                    return Some((cid.clone(), token_up));
+                                }
+                            }
                         }
                     }
                 }
             }
-            // Fallback: use any market's condition_id for probing
-            markets
-                .first()
-                .and_then(|m| m.condition_id.clone())
+            Err(e) => {
+                error!("Failed to search for probe market at offset {}: {}", offset, e);
+                break;
+            }
         }
-        Err(e) => {
-            error!("Failed to search for probe market: {}", e);
-            None
-        }
+        tokio::time::sleep(std::time::Duration::from_millis(200)).await;
     }
+
+    warn!("Could not find a BTC 15-min market with token_id for probing");
+    None
 }
 
 fn gamma_market_to_record(m: &GammaMarket) -> Option<ObMarketRecord> {
@@ -559,13 +580,16 @@ fn gamma_market_to_record(m: &GammaMarket) -> Option<ObMarketRecord> {
         .and_then(|v| v.parse::<f64>().ok())
         .unwrap_or(0.0);
 
+    // Parse clobTokenIds: JSON string like "[\"token1\", \"token2\"]"
+    let (token_id_up, token_id_down) = parse_clob_token_ids(m.clob_token_ids.as_deref());
+
     Some(ObMarketRecord {
         id: None,
         condition_id,
         question: m.question.clone(),
         slug: m.slug.clone(),
-        token_id_up: None,   // Will be populated if available
-        token_id_down: None,
+        token_id_up,
+        token_id_down,
         start_time,
         end_time,
         outcome,
@@ -576,6 +600,16 @@ fn gamma_market_to_record(m: &GammaMarket) -> Option<ObMarketRecord> {
         data_points_count: Some(0),
         created_at: None,
     })
+}
+
+/// Parse clobTokenIds from Gamma API (JSON string like "[\"token1\",\"token2\"]")
+fn parse_clob_token_ids(raw: Option<&str>) -> (Option<String>, Option<String>) {
+    if let Some(s) = raw {
+        if let Ok(ids) = serde_json::from_str::<Vec<String>>(s) {
+            return (ids.first().cloned(), ids.get(1).cloned());
+        }
+    }
+    (None, None)
 }
 
 /// Parse outcome from outcome_prices string like "[0.95,0.05]"
@@ -621,14 +655,14 @@ pub fn parse_market_outcome(
 /// Returns Vec<(timestamp_ms, elapsed_seconds, price, side, size)>.
 async fn fetch_market_data(
     client: &PolymarketDataClient,
-    condition_id: &str,
+    market_id: &str, // token_id for PricesHistory, condition_id for trades
     start_time: i64,
     end_time: i64,
     source: DataSource,
 ) -> Vec<(i64, f64, f64, Option<String>, Option<f64>)> {
     match source {
         DataSource::PricesHistory => {
-            match client.get_prices_history(condition_id, start_time, end_time).await {
+            match client.get_prices_history(market_id, start_time, end_time).await {
                 Ok(points) => points
                     .into_iter()
                     .filter_map(|p| {
@@ -642,7 +676,7 @@ async fn fetch_market_data(
             }
         }
         DataSource::ClobTrades => {
-            match client.try_get_market_trades(condition_id).await {
+            match client.try_get_market_trades(market_id).await {
                 Ok(trades) => trades
                     .into_iter()
                     .filter_map(|t| {
@@ -658,7 +692,7 @@ async fn fetch_market_data(
             }
         }
         DataSource::DataApiTrades => {
-            match client.try_get_data_api_market_trades(condition_id).await {
+            match client.try_get_data_api_market_trades(market_id).await {
                 Ok(trades) => trades
                     .into_iter()
                     .filter_map(|t| {

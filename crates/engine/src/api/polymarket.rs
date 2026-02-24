@@ -163,6 +163,7 @@ pub struct GammaMarket {
     pub outcome_prices: Option<String>,  // JSON string like "[0.65,0.35]"
     pub event_slug: Option<String>,
     pub description: Option<String>,
+    pub clob_token_ids: Option<String>, // JSON string like "[\"token1\", \"token2\"]"
 }
 
 /// Event metadata from Gamma API
@@ -536,71 +537,147 @@ impl PolymarketDataClient {
     // =======================================================================
 
     /// Probe the best available data source by testing all 3 on a known market.
-    pub async fn probe_best_data_source(&self, test_condition_id: &str) -> DataSource {
-        // Try prices-history first (most useful, aggregated)
+    /// `test_token_id` is optional — if provided, also tries prices-history with token_id.
+    pub async fn probe_best_data_source(
+        &self,
+        test_condition_id: &str,
+        test_token_id: Option<&str>,
+    ) -> DataSource {
+        use tracing::{info, warn};
+
+        // Try prices-history with condition_id first (per official docs)
         let url = format!(
-            "{}/prices-history?market={}&interval=max",
+            "{}/prices-history?market={}&interval=max&fidelity=5",
             CLOB_URL, test_condition_id
         );
-        debug!("Probing prices-history: {}", url);
-        if let Ok(resp) = self.client.get(&url).send().await {
-            if resp.status().is_success() {
-                if let Ok(body) = resp.text().await {
-                    // Check that we got actual data (not empty array or error)
-                    if body.len() > 10 && (body.contains("\"t\"") || body.contains("\"p\"")) {
-                        debug!("prices-history available");
-                        return DataSource::PricesHistory;
-                    }
-                    // prices-history may return {history: [...]}
-                    if body.contains("history") && body.len() > 20 {
-                        debug!("prices-history available (history field)");
-                        return DataSource::PricesHistory;
+        info!("Probing prices-history (condition_id): {}", url);
+        match self.client.get(&url).send().await {
+            Ok(resp) => {
+                let status = resp.status();
+                info!("prices-history response status: {}", status);
+                if status.is_success() {
+                    if let Ok(body) = resp.text().await {
+                        let preview = &body[..body.len().min(300)];
+                        info!("prices-history body preview ({}B): {}", body.len(), preview);
+                        if body.len() > 10 && (body.contains("\"t\"") || body.contains("\"p\"")) {
+                            info!("prices-history available (condition_id)");
+                            return DataSource::PricesHistory;
+                        }
+                        if body.contains("history") && body.len() > 20 {
+                            info!("prices-history available (history field)");
+                            return DataSource::PricesHistory;
+                        }
                     }
                 }
+            }
+            Err(e) => warn!("prices-history request failed: {}", e),
+        }
+
+        // Try prices-history with token_id as fallback
+        if let Some(token_id) = test_token_id {
+            let url = format!(
+                "{}/prices-history?market={}&interval=max&fidelity=5",
+                CLOB_URL, token_id
+            );
+            info!("Probing prices-history (token_id): {}", url);
+            match self.client.get(&url).send().await {
+                Ok(resp) => {
+                    let status = resp.status();
+                    info!("prices-history (token_id) response status: {}", status);
+                    if status.is_success() {
+                        if let Ok(body) = resp.text().await {
+                            let preview = &body[..body.len().min(300)];
+                            info!("prices-history (token_id) body preview ({}B): {}", body.len(), preview);
+                            if body.len() > 10 && (body.contains("\"t\"") || body.contains("\"p\"")) {
+                                info!("prices-history available (token_id)");
+                                return DataSource::PricesHistory;
+                            }
+                            if body.contains("history") && body.len() > 20 {
+                                info!("prices-history available (token_id, history field)");
+                                return DataSource::PricesHistory;
+                            }
+                        }
+                    }
+                }
+                Err(e) => warn!("prices-history (token_id) request failed: {}", e),
             }
         }
 
-        // Try CLOB trades (may need auth)
+        // Try CLOB trades
         let url = format!("{}/trades?market={}", CLOB_URL, test_condition_id);
-        debug!("Probing CLOB trades: {}", url);
-        if let Ok(resp) = self.client.get(&url).send().await {
-            if resp.status().is_success() {
-                if let Ok(trades) = resp.json::<Vec<MarketTrade>>().await {
-                    if !trades.is_empty() {
-                        debug!(count = trades.len(), "CLOB trades available");
-                        return DataSource::ClobTrades;
+        info!("Probing CLOB trades: {}", url);
+        match self.client.get(&url).send().await {
+            Ok(resp) => {
+                let status = resp.status();
+                info!("CLOB trades response status: {}", status);
+                if status.is_success() {
+                    if let Ok(body) = resp.text().await {
+                        let preview = &body[..body.len().min(300)];
+                        info!("CLOB trades body preview ({}B): {}", body.len(), preview);
+                        if let Ok(trades) = serde_json::from_str::<Vec<MarketTrade>>(&body) {
+                            if !trades.is_empty() {
+                                info!(count = trades.len(), "CLOB trades available");
+                                return DataSource::ClobTrades;
+                            }
+                        }
                     }
                 }
             }
+            Err(e) => warn!("CLOB trades request failed: {}", e),
         }
 
         // Try Data API trades (public, by market)
         let url = format!("{}/trades?market={}", BASE_URL, test_condition_id);
-        debug!("Probing Data API trades: {}", url);
-        if let Ok(resp) = self.client.get(&url).send().await {
-            if resp.status().is_success() {
-                if let Ok(trades) = resp.json::<Vec<TraderTrade>>().await {
-                    if !trades.is_empty() {
-                        debug!(count = trades.len(), "Data API trades available");
-                        return DataSource::DataApiTrades;
+        info!("Probing Data API trades: {}", url);
+        match self.client.get(&url).send().await {
+            Ok(resp) => {
+                let status = resp.status();
+                info!("Data API trades response status: {}", status);
+                if status.is_success() {
+                    if let Ok(body) = resp.text().await {
+                        let preview = &body[..body.len().min(300)];
+                        info!("Data API trades body preview ({}B): {}", body.len(), preview);
+                        if let Ok(trades) = serde_json::from_str::<Vec<TraderTrade>>(&body) {
+                            if !trades.is_empty() {
+                                info!(count = trades.len(), "Data API trades available");
+                                return DataSource::DataApiTrades;
+                            }
+                        }
                     }
                 }
             }
+            Err(e) => warn!("Data API trades request failed: {}", e),
         }
 
-        debug!("No data source available");
+        warn!("No data source available for condition_id={} token_id={:?}", test_condition_id, test_token_id);
         DataSource::None
     }
 
-    /// Search for closed BTC 15-minute markets via Gamma API (single page).
+    /// Search for BTC 15-minute markets via Gamma API (single page).
+    /// `newest_first` reverses the sort order to get the most recent markets.
     pub async fn search_btc_15min_markets(
         &self,
         offset: u32,
         limit: u32,
     ) -> Result<Vec<GammaMarket>> {
+        self.search_btc_15min_markets_order(offset, limit, false).await
+    }
+
+    /// Search for BTC 15-minute markets via Gamma API (single page) with sort control.
+    pub async fn search_btc_15min_markets_order(
+        &self,
+        offset: u32,
+        limit: u32,
+        newest_first: bool,
+    ) -> Result<Vec<GammaMarket>> {
+        let order_param = if newest_first {
+            "&order=id&ascending=false"
+        } else {
+            ""
+        };
         let url = format!(
-            "{}/markets?closed=true&limit={}&offset={}",
-            GAMMA_URL, limit, offset
+            "{}/markets?closed=true&limit={}&offset={}{}",
+            GAMMA_URL, limit, offset, order_param
         );
         debug!("Searching BTC 15-min markets: {}", url);
 
@@ -668,16 +745,16 @@ impl PolymarketDataClient {
         Ok(all_markets)
     }
 
-    /// CLOB: Get price history for a market.
+    /// CLOB: Get price history for a market. `market_id` should be a token_id.
     pub async fn get_prices_history(
         &self,
-        condition_id: &str,
+        market_id: &str,
         start_ts: i64,
         end_ts: i64,
     ) -> Result<Vec<PriceHistoryPoint>> {
         let url = format!(
-            "{}/prices-history?market={}&startTs={}&endTs={}&interval=max",
-            CLOB_URL, condition_id, start_ts, end_ts
+            "{}/prices-history?market={}&startTs={}&endTs={}&interval=max&fidelity=5",
+            CLOB_URL, market_id, start_ts, end_ts
         );
 
         let resp = self.client.get(&url).send().await?;

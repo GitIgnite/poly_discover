@@ -417,18 +417,21 @@ Ports à ouvrir dans le Security Group EC2 :
 
 ## Historique des changements récents
 
-### Fix Orderbook Backtest — bouton + logs visibles (2026-02-24)
+### Fix Orderbook Backtest — token_id + probe + logs visibles (2026-02-24)
 
-**Bug fix** : le bouton "Analyser" de l'Orderbook Backtest ne montrait aucun feedback visuel. Deux problèmes corrigés :
+**3 bug fixes** pour le backtest Orderbook :
 
-1. **Race condition** : `api_start_ob_backtest()` faisait `reset()` puis `tokio::spawn()`. Le status restait `Idle` entre le reset et le démarrage du background task. Le frontend voyait `running: false` → pas de progression affichée. **Fix** : le handler met le status à `Probing` **avant** le `tokio::spawn()`.
+1. **`prices-history` utilisait `condition_id` au lieu de `token_id`** : l'endpoint CLOB `/prices-history?market=` nécessite un **token_id** (pas un condition_id). Avec condition_id, l'API retournait `{"history":[]}` → aucune donnée → probe échoue. **Fix** : ajout du champ `clobTokenIds` dans `GammaMarket`, parsing du JSON string retourné par Gamma API, stockage dans `ob_markets.token_id_up/down`, utilisation du token_id pour le fetch des prix.
 
-2. **Pas de logs frontend** : la progression n'avait qu'un `current_step` (une string). Si le backtest échouait tôt (Probing, API down), l'erreur était invisible. **Fix** : ajout d'un buffer de logs (`Vec<String>`, max 200 lignes FIFO) dans `ObBacktestProgress` + panneau de logs scrollable côté frontend.
+2. **Probe trouvait des marchés anciens (2020)** : `find_probe_market` cherchait dans les 20 premiers marchés fermés (tri par défaut = plus anciens). Ces marchés n'ont pas de données. **Fix** : recherche newest-first (`order=id&ascending=false`), pagination jusqu'à 5 pages de 100, exige que le marché ait un `clobTokenIds` non-vide.
+
+3. **Race condition + pas de logs frontend** : bouton "Analyser" sans feedback. **Fix** : status `Probing` avant `tokio::spawn()`, buffer de logs FIFO (200 lignes), panneau de logs scrollable, condition d'affichage élargie à `Error`.
 
 **Fichiers modifiés (3) :**
-- `crates/engine/src/orderbook_backtest.rs` — `set_status()`, `set_step()`, `set_error()` rendus `pub fn`. Nouveau champ `logs: RwLock<Vec<String>>` + méthode `pub fn add_log()` (timestamp + message, FIFO 200 lignes). Appels `add_log()` à chaque étape significative de `run_orderbook_backtest()`.
-- `crates/server/src/main.rs` — `api_start_ob_backtest()` : set status `Probing` avant `tokio::spawn()`. `api_ob_backtest_status()` : ajout du champ `logs` dans la réponse JSON.
-- `src/pages/OrderbookAnalysis.svelte` — `handleStartBacktest()` : optimistic UI (force `running: true` immédiatement) + poll immédiat. Condition d'affichage élargie à `status === 'Error'`. Nouveau panneau de logs (fond noir, mono, scroll auto, max 200px).
+- `crates/engine/src/api/polymarket.rs` — `GammaMarket` : +`clob_token_ids: Option<String>`. `probe_best_data_source()` : accepte `test_token_id: Option<&str>`, essaie condition_id puis token_id pour prices-history, logs détaillés (status + body preview). `search_btc_15min_markets_order()` : nouvelle méthode avec tri newest-first. `get_prices_history()` : ajout `fidelity=5`.
+- `crates/engine/src/orderbook_backtest.rs` — `parse_clob_token_ids()` : parse JSON string → (token_up, token_down). `gamma_market_to_record()` : peuple `token_id_up`/`token_id_down`. `find_probe_market()` : recherche newest-first, 5 pages, exige token_id. `fetch_market_data` : utilise token_id pour PricesHistory. `set_status/set_step/set_error` rendus `pub fn`. Log buffer FIFO 200 lignes.
+- `crates/server/src/main.rs` — Set status `Probing` avant spawn. Ajout `logs` dans la réponse status.
+- `src/pages/OrderbookAnalysis.svelte` — Optimistic UI + poll immédiat. Panneau de logs terminal. Condition élargie à Error.
 
 ---
 
