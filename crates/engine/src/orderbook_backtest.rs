@@ -151,8 +151,12 @@ pub struct DetectedPattern {
     pub recall: f64,
     pub f1_score: f64,
     pub sample_size: usize,
+    pub up_count: usize,
+    pub down_count: usize,
     pub confidence_interval: (f64, f64),
     pub stability_score: f64,
+    pub first_half_accuracy: f64,
+    pub second_half_accuracy: f64,
 }
 
 // ---------------------------------------------------------------------------
@@ -164,92 +168,199 @@ pub async fn run_orderbook_backtest(
     client: &PolymarketDataClient,
     db_pool: SqlitePool,
 ) {
-    progress.reset();
+    // Soft reset: keep counters, clear control flags and logs
+    progress.cancelled.store(false, Ordering::Relaxed);
+    *progress.error_message.write().unwrap() = None;
+    progress.logs.write().unwrap().clear();
+    *progress.best_patterns.write().unwrap() = Vec::new();
 
-    // Step 1: Probe data sources
+    // Load resume state from DB
+    let resume = OrderbookRepository::get_resume_stats(&db_pool)
+        .await
+        .unwrap_or_default();
+
+    // Pre-populate counters from DB state
+    progress.total_markets.store(resume.total as u32, Ordering::Relaxed);
+    progress.markets_discovered.store(resume.total as u32, Ordering::Relaxed);
+    progress.markets_fetched.store((resume.extracted + resume.fetched) as u32, Ordering::Relaxed);
+    progress.features_extracted.store(resume.extracted as u32, Ordering::Relaxed);
+    progress.patterns_found.store(resume.patterns as u32, Ordering::Relaxed);
+
+    progress.add_log(&format!(
+        "Resume state: {} total, {} unfetched, {} fetched, {} extracted, {} patterns",
+        resume.total, resume.unfetched, resume.fetched, resume.extracted, resume.patterns
+    ));
+    info!(
+        total = resume.total,
+        unfetched = resume.unfetched,
+        fetched = resume.fetched,
+        extracted = resume.extracted,
+        patterns = resume.patterns,
+        "Orderbook backtest: loaded resume state"
+    );
+
+    // Step 1: Probe data sources (skip if already cached)
     progress.set_status(ObBacktestStatus::Probing);
     progress.set_step("Probing available data sources...");
-    progress.add_log("Probing data sources...");
-    info!("Orderbook backtest: probing data sources");
 
-    // Use a known BTC 15-min market condition_id for probing
-    // We'll try to discover one first, then probe with it
-    let (probe_condition_id, probe_token_id) = match find_probe_market(client).await {
-        Some((cid, tid)) => {
-            progress.add_log(&format!("Probe market found: {} (token: {:?})", cid, tid));
-            (cid, tid)
+    let cached_source = OrderbookRepository::get_state(&db_pool, "data_source")
+        .await
+        .ok()
+        .flatten();
+
+    let data_source = if let Some(ref ds_str) = cached_source {
+        let ds = match ds_str.as_str() {
+            "PricesHistory" => DataSource::PricesHistory,
+            "ClobTrades" => DataSource::ClobTrades,
+            "DataApiTrades" => DataSource::DataApiTrades,
+            _ => DataSource::None,
+        };
+        if ds != DataSource::None {
+            progress.add_log(&format!("Reusing cached data source: {}", ds));
+            info!("Reusing cached data source: {}", ds);
+            *progress.data_source.write().unwrap() = ds;
+            ds
+        } else {
+            DataSource::None
         }
-        None => {
-            progress.set_error("Could not find any BTC 15-min market for probing".into());
-            return;
-        }
+    } else {
+        DataSource::None
     };
 
-    let data_source = client
-        .probe_best_data_source(&probe_condition_id, probe_token_id.as_deref())
-        .await;
-    *progress.data_source.write().unwrap() = data_source;
-    progress.add_log(&format!("Best data source: {}", data_source));
-    info!("Best data source: {}", data_source);
+    let data_source = if data_source == DataSource::None {
+        // Full probe
+        progress.add_log("Probing data sources...");
+        info!("Orderbook backtest: probing data sources");
 
-    if data_source == DataSource::None {
-        progress.set_error("No data source available for historical market data".into());
-        return;
-    }
+        let (probe_condition_id, probe_token_id) = match find_probe_market(client).await {
+            Some((cid, tid)) => {
+                progress.add_log(&format!("Probe market found: {} (token: {:?})", cid, tid));
+                (cid, tid)
+            }
+            None => {
+                progress.set_error("Could not find any BTC 15-min market for probing".into());
+                return;
+            }
+        };
+
+        let ds = client
+            .probe_best_data_source(&probe_condition_id, probe_token_id.as_deref())
+            .await;
+        *progress.data_source.write().unwrap() = ds;
+        progress.add_log(&format!("Best data source: {}", ds));
+        info!("Best data source: {}", ds);
+
+        if ds == DataSource::None {
+            progress.set_error("No data source available for historical market data".into());
+            return;
+        }
+
+        // Cache the probe result for future runs
+        let _ = OrderbookRepository::set_state(&db_pool, "data_source", &format!("{}", ds)).await;
+        ds
+    } else {
+        data_source
+    };
 
     if progress.is_cancelled() { return; }
 
-    // Step 2: Discover markets
+    // Step 2: Discover markets (incremental if DB has data)
     progress.set_status(ObBacktestStatus::DiscoveringMarkets);
     progress.set_step("Discovering BTC 15-min markets via Gamma API...");
-    progress.add_log("Discovering BTC 15-min markets via Gamma API...");
-    info!("Orderbook backtest: discovering markets");
 
-    let markets = match client
-        .get_all_btc_15min_markets(|total_found, offset| {
-            progress
-                .markets_discovered
-                .store(total_found as u32, Ordering::Relaxed);
-            progress.set_step(&format!(
-                "Discovering markets... {} found (page {})",
-                total_found,
-                offset / 100
-            ));
-        })
+    let latest_end_time = OrderbookRepository::get_latest_market_end_time(&db_pool)
         .await
-    {
-        Ok(m) => m,
-        Err(e) => {
-            progress.set_error(format!("Market discovery failed: {}", e));
-            return;
+        .ok()
+        .flatten();
+
+    let markets = if let Some(since) = latest_end_time {
+        // Incremental: only fetch markets newer than what we have
+        progress.add_log(&format!(
+            "Incremental discovery since {} ({} markets in DB)",
+            since, resume.total
+        ));
+        info!(
+            since_end_time = since,
+            existing = resume.total,
+            "Incremental market discovery"
+        );
+
+        match client
+            .get_new_btc_15min_markets(since, |total_found, offset| {
+                progress
+                    .markets_discovered
+                    .store((resume.total as usize + total_found) as u32, Ordering::Relaxed);
+                progress.set_step(&format!(
+                    "Incremental discovery... {} new found (page {})",
+                    total_found,
+                    offset / 100
+                ));
+            })
+            .await
+        {
+            Ok(m) => m,
+            Err(e) => {
+                progress.set_error(format!("Market discovery failed: {}", e));
+                return;
+            }
+        }
+    } else {
+        // Full discovery (first run)
+        progress.add_log("Full discovery (no existing markets in DB)");
+        info!("Full market discovery (first run)");
+
+        match client
+            .get_all_btc_15min_markets(|total_found, offset| {
+                progress
+                    .markets_discovered
+                    .store(total_found as u32, Ordering::Relaxed);
+                progress.set_step(&format!(
+                    "Discovering markets... {} found (page {})",
+                    total_found,
+                    offset / 100
+                ));
+            })
+            .await
+        {
+            Ok(m) => m,
+            Err(e) => {
+                progress.set_error(format!("Market discovery failed: {}", e));
+                return;
+            }
         }
     };
 
-    info!(count = markets.len(), "Markets discovered");
-    progress.add_log(&format!("Found {} BTC markets total", markets.len()));
-    progress.markets_discovered.store(markets.len() as u32, Ordering::Relaxed);
+    progress.add_log(&format!("Found {} BTC markets from API", markets.len()));
+    info!(count = markets.len(), "Markets discovered from API");
 
-    // Convert to DB records and save
+    // Convert to DB records and save (INSERT OR IGNORE handles duplicates)
     let market_records: Vec<ObMarketRecord> = markets
         .iter()
         .filter_map(|m| gamma_market_to_record(m))
         .collect();
 
-    if market_records.is_empty() {
+    if !market_records.is_empty() {
+        match OrderbookRepository::save_markets_batch(&db_pool, &market_records).await {
+            Ok(n) => {
+                progress.add_log(&format!("Markets saved to DB: {} new inserted", n));
+                info!(inserted = n, "Markets saved to DB");
+            }
+            Err(e) => {
+                progress.set_error(format!("Failed to save markets: {}", e));
+                return;
+            }
+        }
+    } else if resume.total == 0 {
         progress.set_error("No valid BTC 15-min markets found".into());
         return;
     }
 
-    match OrderbookRepository::save_markets_batch(&db_pool, &market_records).await {
-        Ok(n) => {
-            progress.add_log(&format!("Markets saved to DB: {} inserted", n));
-            info!(inserted = n, "Markets saved to DB");
-        }
-        Err(e) => {
-            progress.set_error(format!("Failed to save markets: {}", e));
-            return;
-        }
-    }
+    // Refresh total count after discovery
+    let total_after_discovery = OrderbookRepository::get_market_count(&db_pool).await.unwrap_or(0);
+    progress.total_markets.store(total_after_discovery as u32, Ordering::Relaxed);
+    progress.markets_discovered.store(total_after_discovery as u32, Ordering::Relaxed);
+
+    let _ = OrderbookRepository::set_state(&db_pool, "last_step_completed", "discovering").await;
 
     if progress.is_cancelled() { return; }
 
@@ -271,11 +382,11 @@ pub async fn run_orderbook_backtest(
         };
 
         if unfetched.is_empty() {
+            progress.add_log("No unfetched markets remaining — skipping fetch step");
             break;
         }
 
-        let total = OrderbookRepository::get_market_count(&db_pool).await.unwrap_or(0);
-        progress.total_markets.store(total as u32, Ordering::Relaxed);
+        let total = total_after_discovery;
 
         for market in &unfetched {
             if progress.is_cancelled() { return; }
@@ -335,6 +446,8 @@ pub async fn run_orderbook_backtest(
         }
     }
 
+    let _ = OrderbookRepository::set_state(&db_pool, "last_step_completed", "fetching").await;
+
     if progress.is_cancelled() { return; }
 
     // Step 4: Extract features
@@ -356,6 +469,7 @@ pub async fn run_orderbook_backtest(
         };
 
         if fetched_markets.is_empty() {
+            progress.add_log("No markets pending feature extraction — skipping");
             break;
         }
 
@@ -393,12 +507,14 @@ pub async fn run_orderbook_backtest(
         }
     }
 
+    let _ = OrderbookRepository::set_state(&db_pool, "last_step_completed", "extracting").await;
+
     if progress.is_cancelled() { return; }
 
-    // Step 5: Detect patterns
+    // Step 5: Detect patterns (always re-runs on all accumulated features)
     progress.set_status(ObBacktestStatus::DetectingPatterns);
     progress.set_step("Detecting patterns from features...");
-    progress.add_log("Detecting patterns from features...");
+    progress.add_log("Detecting patterns from all accumulated features...");
     info!("Orderbook backtest: detecting patterns");
 
     let run_id = format!("run_{}", Utc::now().timestamp());
@@ -417,6 +533,8 @@ pub async fn run_orderbook_backtest(
             debug!(window, count = features.len(), "Not enough features for pattern detection");
             continue;
         }
+
+        progress.set_step(&format!("Detecting patterns for {}s window ({} features)...", window, features.len()));
 
         let univariate = detect_univariate_patterns(&features, window);
         let multivariate = detect_multivariate_patterns(&features, &univariate, window);
@@ -438,7 +556,7 @@ pub async fn run_orderbook_backtest(
     // Sort by accuracy descending
     all_patterns.sort_by(|a, b| b.accuracy.partial_cmp(&a.accuracy).unwrap_or(std::cmp::Ordering::Equal));
 
-    // Save patterns to DB
+    // Save patterns to DB (deletes old patterns from previous run first)
     let pattern_records: Vec<ObPatternRecord> = all_patterns
         .iter()
         .map(|p| pattern_to_record(p, &run_id))
@@ -490,6 +608,14 @@ pub async fn run_orderbook_backtest(
             best_accuracy_120s: best_120,
         };
     }
+
+    let _ = OrderbookRepository::set_state(&db_pool, "last_step_completed", "detecting").await;
+    let _ = OrderbookRepository::set_state(
+        &db_pool,
+        "last_run_timestamp",
+        &Utc::now().timestamp().to_string(),
+    )
+    .await;
 
     if progress.is_cancelled() { return; }
 
@@ -1052,6 +1178,10 @@ fn find_best_threshold(
 
     let ci = confidence_interval_95(accuracy, values.len());
 
+    // Count actual UP/DOWN outcomes in the sample
+    let up_count = values.iter().filter(|(_, is_up)| *is_up).count();
+    let down_count = values.len() - up_count;
+
     let op = if best_above { ">" } else { "<" };
     let name = format!("{}{}{}@{}s", feature_name, op, format_threshold(best_threshold), window);
     let desc = format!(
@@ -1071,8 +1201,12 @@ fn find_best_threshold(
         recall,
         f1_score: f1,
         sample_size: values.len(),
+        up_count,
+        down_count,
         confidence_interval: ci,
         stability_score: stability,
+        first_half_accuracy: acc_first,
+        second_half_accuracy: acc_second,
     })
 }
 
@@ -1270,6 +1404,38 @@ fn find_best_multivariate_pair(
         return None;
     }
 
+    // Compute proper TP/FP/TN/FN at best thresholds
+    let mut tp = 0u32;
+    let mut fp = 0u32;
+    let mut _tn = 0u32;
+    let mut fn_ = 0u32;
+    let mut up_count = 0usize;
+
+    for &(v1, v2, is_up) in values {
+        if is_up {
+            up_count += 1;
+        }
+        let pred1 = if best_a1 { v1 > best_t1 } else { v1 < best_t1 };
+        let pred2 = if best_a2 { v2 > best_t2 } else { v2 < best_t2 };
+        let predicted = pred1 && pred2;
+        let actual = if predict_up { is_up } else { !is_up };
+        match (predicted, actual) {
+            (true, true) => tp += 1,
+            (true, false) => fp += 1,
+            (false, true) => fn_ += 1,
+            (false, false) => _tn += 1,
+        }
+    }
+
+    let precision = if (tp + fp) > 0 { tp as f64 / (tp + fp) as f64 } else { 0.0 };
+    let recall = if (tp + fn_) > 0 { tp as f64 / (tp + fn_) as f64 } else { 0.0 };
+    let f1 = if (precision + recall) > 0.0 {
+        2.0 * precision * recall / (precision + recall)
+    } else {
+        0.0
+    };
+    let down_count = n - up_count;
+
     let ci = confidence_interval_95(best_accuracy, n);
 
     let op1 = if best_a1 { ">" } else { "<" };
@@ -1296,12 +1462,16 @@ fn find_best_multivariate_pair(
             feat1, op1, best_t1, feat2, op2, best_t2, window, direction, best_accuracy * 100.0
         ),
         accuracy: best_accuracy,
-        precision: best_accuracy, // Simplified: use accuracy as proxy
-        recall: best_accuracy,
-        f1_score: best_accuracy,
+        precision,
+        recall,
+        f1_score: f1,
         sample_size: n,
+        up_count,
+        down_count,
         confidence_interval: ci,
         stability_score: stability,
+        first_half_accuracy: acc_first,
+        second_half_accuracy: acc_second,
     })
 }
 
@@ -1392,6 +1562,8 @@ fn detect_sequence_patterns(
                 let stability = 1.0 - (acc_first - acc_second).abs();
                 if stability >= 0.7 {
                     let ci = confidence_interval_95(accuracy, sequences.len());
+                    let seq_up = sequences.iter().filter(|(_, is_up)| *is_up).count();
+                    let seq_down = sequences.len() - seq_up;
                     patterns.push(DetectedPattern {
                         name: format!("{}_all_positive_T30-T120→{}", feature_name, direction),
                         pattern_type: "sequence".to_string(),
@@ -1407,8 +1579,12 @@ fn detect_sequence_patterns(
                         recall: accuracy,
                         f1_score: accuracy,
                         sample_size: sequences.len(),
+                        up_count: seq_up,
+                        down_count: seq_down,
                         confidence_interval: ci,
                         stability_score: stability,
+                        first_half_accuracy: acc_first,
+                        second_half_accuracy: acc_second,
                     });
                 }
             }
@@ -1457,6 +1633,8 @@ fn detect_sequence_patterns(
                 let stability = 1.0 - (s1 - s2).abs();
 
                 if stability >= 0.7 {
+                    let seq_up = sequences.iter().filter(|(_, is_up)| *is_up).count();
+                    let seq_down = sequences.len() - seq_up;
                     patterns.push(DetectedPattern {
                         name: format!("{}_increasing_T30-T120→{}", feature_name, direction),
                         pattern_type: "sequence".to_string(),
@@ -1472,8 +1650,12 @@ fn detect_sequence_patterns(
                         recall: acc_inc,
                         f1_score: acc_inc,
                         sample_size: sequences.len(),
+                        up_count: seq_up,
+                        down_count: seq_down,
                         confidence_interval: ci,
                         stability_score: stability,
+                        first_half_accuracy: s1,
+                        second_half_accuracy: s2,
                     });
                 }
             }
@@ -1520,12 +1702,12 @@ fn pattern_to_record(p: &DetectedPattern, run_id: &str) -> ObPatternRecord {
         recall_pct: Some(p.recall),
         f1_score: Some(p.f1_score),
         sample_size: p.sample_size as i64,
-        up_count: if p.direction == "UP" { p.sample_size as i64 } else { 0 },
-        down_count: if p.direction == "DOWN" { p.sample_size as i64 } else { 0 },
+        up_count: p.up_count as i64,
+        down_count: p.down_count as i64,
         confidence_95_low: Some(p.confidence_interval.0),
         confidence_95_high: Some(p.confidence_interval.1),
-        first_half_accuracy: None,
-        second_half_accuracy: None,
+        first_half_accuracy: Some(p.first_half_accuracy),
+        second_half_accuracy: Some(p.second_half_accuracy),
         stability_score: Some(p.stability_score),
         analysis_run_id: Some(run_id.to_string()),
         created_at: None,

@@ -85,7 +85,7 @@ crates/
 - `api/binance.rs` — Binance public klines API client
 - `api/polymarket.rs` — Polymarket Data API client (leaderboard, positions, trades, portfolio value, activity, closed positions, Gamma API for market metadata, username resolution, paginated fetching, CLOB API for prices-history/trades/orderbook, data source probing)
 
-**persistence** has 10 tables: `discovery_backtests` (30 columns), `leaderboard_traders` (17 columns), `trader_trades` (15 columns), `profile_analyses` (25 columns), `profile_trades` (13 columns), `ob_markets` (15 columns), `ob_market_prices` (7 columns), `ob_market_features` (22 columns), `ob_snapshots` (15 columns), `ob_patterns` (20 columns). WAL mode, 5-connection pool. Migrations are idempotent (ALTER TABLE tolerates "duplicate column name"). Four repositories: `DiscoveryRepository`, `LeaderboardRepository`, `ProfileRepository`, and `OrderbookRepository`.
+**persistence** has 11 tables: `discovery_backtests` (30 columns), `leaderboard_traders` (17 columns), `trader_trades` (15 columns), `profile_analyses` (25 columns), `profile_trades` (13 columns), `ob_markets` (15 columns), `ob_market_prices` (7 columns), `ob_market_features` (22 columns), `ob_snapshots` (15 columns), `ob_patterns` (20 columns), `ob_backtest_state` (3 columns). WAL mode, 5-connection pool. Migrations are idempotent (ALTER TABLE tolerates "duplicate column name"). Four repositories: `DiscoveryRepository`, `LeaderboardRepository`, `ProfileRepository`, and `OrderbookRepository`.
 
 **server** exposes REST endpoints and a CLI with two subcommands: `serve` (web server) and `run` (headless discovery).
 
@@ -247,6 +247,16 @@ Le système utilise une estimation dynamique de probabilité basée sur le chang
 
 **Sizing Modes** — Three position sizing strategies: `fixed`, `kelly`, `confidence`.
 
+**Incremental Orderbook Backtest** — Le backtest orderbook reprend là où il s'est arrêté grâce à un système de reprise incrémentale :
+- `ob_backtest_state` table key-value persiste l'état du process (data_source, probe_token_id, last_step_completed)
+- `get_resume_stats()` charge l'état DB (total/unfetched/fetched/extracted/patterns) au démarrage
+- `get_new_btc_15min_markets()` pagine newest-first et s'arrête après 5 pages sans nouveaux inserts (early-stop)
+- Les étapes fetch/extract sont skippées si rien à traiter (`unfetched == 0` / `fetched == extracted`)
+- Le probe est skippé si `data_source` est déjà en cache dans `ob_backtest_state`
+- Le status endpoint retourne `db_state` quand Idle pour que le frontend affiche l'état même sans lancer d'analyse
+- Le champ `data_fetched` dans `ob_markets` sert de state machine : 0=unfetched, 1=fetched, 2=extracted
+- Purge complète (`mode=full`) supprime les 6 tables orderbook via `full_reset()`
+
 ## Adding a New Strategy
 
 1. **Implement `SignalGenerator`** in `crates/engine/src/indicators.rs`:
@@ -319,7 +329,7 @@ Le système utilise une estimation dynamique de probabilité basée sur le chang
 | POST | `/api/orderbook/collector/start` | Start live WebSocket collector |
 | POST | `/api/orderbook/collector/stop` | Stop live collector |
 | GET | `/api/orderbook/collector/status` | Poll collector status |
-| POST | `/api/orderbook/cleanup` | Manual data purge |
+| POST | `/api/orderbook/cleanup` | Manual data purge (mode=partial or mode=full) |
 
 ## Testing
 
@@ -416,6 +426,43 @@ Ports à ouvrir dans le Security Group EC2 :
 | 4000 | poly-discover |
 
 ## Historique des changements récents
+
+### Orderbook Backtest — Reprise incrémentale + purge + fix patterns (2026-02-26)
+
+**Feature** : le backtest orderbook reprend automatiquement là où il s'est arrêté au lieu de tout recommencer de zéro. Correction de la détection de patterns et amélioration de la purge.
+
+**Problèmes résolus :**
+1. **Pas de reprise** : `run_orderbook_backtest()` appelait `progress.reset()` qui remettait tous les compteurs à 0 et redécouvrait les ~35K marchés à chaque lancement (~30+ min gaspillées).
+2. **Pas de persistence état process** : la data source trouvée par le probe était perdue au redémarrage.
+3. **Purge inefficace** : pas d'option de reset complet.
+4. **Patterns bugués** : `up_count`/`down_count` incorrects, multivariate utilisait accuracy comme proxy pour precision/recall/f1, `first_half_accuracy`/`second_half_accuracy` jamais sauvés.
+
+**Changements :**
+
+1. **Nouvelle table `ob_backtest_state`** (key-value) : persiste data_source, probe_token_id, last_step_completed entre les runs.
+2. **`ResumeStats`** : charge total/unfetched/fetched/extracted/patterns depuis la DB au démarrage → compteurs pré-peuplés.
+3. **Discovery incrémentale** : `get_new_btc_15min_markets(since_end_time)` pagine newest-first et s'arrête après 5 pages consécutives sans nouveaux inserts. Pour 1 semaine de retard → ~10-40 pages au lieu de 300+.
+4. **Skip probe** si `data_source` déjà en cache dans `ob_backtest_state`.
+5. **Skip étapes inutiles** : si tous les marchés sont fetched → skip fetch. Si toutes les features sont extraites → skip extraction.
+6. **Status endpoint enrichi** : retourne `db_state` quand non-running (total_markets, unfetched, fetched, features_extracted, patterns, data_source, last_step).
+7. **Purge mode=full** : `full_reset()` supprime les 6 tables orderbook.
+8. **Fix up_count/down_count** : calculés correctement dans `find_best_threshold()`, `find_best_multivariate_pair()`, `detect_sequence_patterns()`.
+9. **Fix multivariate precision/recall/f1** : calcul TP/FP/TN/FN au lieu d'utiliser accuracy comme proxy.
+10. **Fix first_half/second_half accuracy** : propagés dans `DetectedPattern` puis dans `pattern_to_record()`.
+11. **Frontend adaptatif** : bouton dynamique ("Reprendre l'analyse", "Extraire features", "Mettre à jour"), barre de progression 3 segments (vert/jaune/gris), compteurs DB quand idle, deux boutons purge (partielle + reset complet).
+
+**Fichiers modifiés (6) :**
+- `crates/persistence/src/schema.rs` — +table `ob_backtest_state`
+- `crates/persistence/src/repository/orderbook.rs` — +`ResumeStats`, +`get_resume_stats()`, +`get_state()`, +`set_state()`, +`get_latest_market_end_time()`, +`full_reset()`
+- `crates/engine/src/api/polymarket.rs` — +`get_new_btc_15min_markets()` (discovery incrémentale avec early-stop)
+- `crates/engine/src/orderbook_backtest.rs` — Refacto orchestrateur (reset_for_resume, skip probe/discovery/fetch/extract), fix DetectedPattern (up_count, down_count, first_half_accuracy, second_half_accuracy), fix find_best_multivariate_pair (TP/FP/TN/FN), fix pattern_to_record
+- `crates/server/src/main.rs` — Status +`db_state` quand idle, cleanup +`mode=full`, suppression de `progress.reset()` dans start handler
+- `src/pages/OrderbookAnalysis.svelte` — Bouton adaptatif, barre progress 3 segments, compteurs DB idle, double purge (partielle + full reset)
+- `src/lib/api.js` — `obCleanup(mode)` avec paramètre mode
+
+**Tests : 93 (inchangés)** — tous passent.
+
+---
 
 ### Fix Orderbook Backtest — token_id + probe + logs visibles (2026-02-24)
 

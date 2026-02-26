@@ -339,9 +339,9 @@ export async function getObCollectorStatus() {
   }
 }
 
-export async function obCleanup() {
+export async function obCleanup(mode = 'partial') {
   try {
-    return await apiCall('/api/orderbook/cleanup', { method: 'POST' });
+    return await apiCall(`/api/orderbook/cleanup?mode=${mode}`, { method: 'POST' });
   } catch (e) {
     return { success: false, message: String(e) };
   }

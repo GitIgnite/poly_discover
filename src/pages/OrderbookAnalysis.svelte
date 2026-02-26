@@ -76,12 +76,39 @@
   }
 
   async function handleCleanup() {
-    if (confirm('Purge raw price data and old snapshots?')) {
-      const result = await obCleanup();
+    if (confirm('Purger les donnees de prix brutes et les anciens snapshots ?')) {
+      const result = await obCleanup('partial');
       if (result.success) {
         loadStats();
+        pollBacktest(); // refresh db_state
       }
     }
+  }
+
+  async function handleFullReset() {
+    if (confirm('ATTENTION : Ceci va supprimer TOUTES les donnees orderbook (marches, prix, features, patterns, snapshots). Continuer ?')) {
+      if (confirm('Derniere confirmation : reset complet de toutes les tables orderbook ?')) {
+        const result = await obCleanup('full');
+        if (result.success) {
+          loadStats();
+          loadPatterns();
+          pollBacktest(); // refresh db_state
+        }
+      }
+    }
+  }
+
+  function getAdaptiveButtonText(dbState) {
+    if (!dbState || dbState.total_markets === 0) {
+      return 'Analyser 1 an de marches BTC 15-min';
+    }
+    if (dbState.unfetched > 0) {
+      return `Reprendre l'analyse (${dbState.unfetched.toLocaleString()} restants)`;
+    }
+    if (dbState.fetched > 0 && dbState.unfetched === 0) {
+      return `Extraire features (${dbState.fetched.toLocaleString()} a traiter)`;
+    }
+    return 'Mettre a jour (nouveaux marches)';
   }
 
   // Initial loads
@@ -174,7 +201,7 @@
         {:else}
           <button onclick={handleStartBacktest} disabled={loading}
             class="px-4 py-2 bg-orange-600 hover:bg-orange-700 text-white rounded-lg text-sm flex items-center gap-2 disabled:opacity-50">
-            <Play size={14} /> Analyser 1 an de marches BTC 15-min
+            <Play size={14} /> {getAdaptiveButtonText(backtestStatus?.db_state)}
           </button>
         {/if}
       </div>
@@ -250,10 +277,74 @@
         {/if}
       </div>
     {:else}
-      <p class="text-sm text-gray-400">
-        Lance l'analyse de ~35 000 marches BTC 15 minutes Polymarket sur 1 an.
-        Detecte des patterns dans les premieres 90-120 secondes qui predisent le resultat UP/DOWN.
-      </p>
+      {#if backtestStatus?.db_state && backtestStatus.db_state.total_markets > 0}
+        <!-- DB state counters when idle -->
+        <div class="space-y-3">
+          <p class="text-sm text-gray-400">
+            Base de donnees existante — {backtestStatus.db_state.total_markets.toLocaleString()} marches en DB.
+            {#if backtestStatus.db_state.last_step}
+              Derniere etape : <span class="text-white">{backtestStatus.db_state.last_step}</span>.
+            {/if}
+          </p>
+
+          <!-- Progress bar: 3 segments -->
+          {@const db = backtestStatus.db_state}
+          {@const total = db.total_markets || 1}
+          {@const extractedPct = (db.features_extracted / total) * 100}
+          {@const fetchedPct = ((db.fetched - (db.features_extracted > db.fetched ? db.fetched : 0)) / total) * 100}
+          {@const actualFetchedOnly = db.fetched > db.features_extracted ? db.fetched - db.features_extracted : 0}
+          {@const fetchedOnlyPct = (actualFetchedOnly / total) * 100}
+          <div class="w-full bg-gray-700 rounded-full h-3 overflow-hidden flex">
+            {#if extractedPct > 0}
+              <div class="bg-green-500 h-full transition-all" style="width: {extractedPct}%"
+                   title="Analyses : {db.features_extracted.toLocaleString()}"></div>
+            {/if}
+            {#if fetchedOnlyPct > 0}
+              <div class="bg-yellow-500 h-full transition-all" style="width: {fetchedOnlyPct}%"
+                   title="Recuperes : {actualFetchedOnly.toLocaleString()}"></div>
+            {/if}
+          </div>
+          <div class="flex gap-4 text-[10px] text-gray-400">
+            <span class="flex items-center gap-1"><span class="w-2 h-2 rounded-full bg-green-500 inline-block"></span> Analyses ({db.features_extracted.toLocaleString()})</span>
+            <span class="flex items-center gap-1"><span class="w-2 h-2 rounded-full bg-yellow-500 inline-block"></span> Recuperes ({actualFetchedOnly.toLocaleString()})</span>
+            <span class="flex items-center gap-1"><span class="w-2 h-2 rounded-full bg-gray-600 inline-block"></span> Non recuperes ({db.unfetched.toLocaleString()})</span>
+            <span class="flex items-center gap-1"><span class="w-2 h-2 rounded-full bg-emerald-500 inline-block"></span> Patterns ({db.patterns.toLocaleString()})</span>
+          </div>
+
+          <!-- Counters grid -->
+          <div class="grid grid-cols-2 md:grid-cols-5 gap-3">
+            <div class="bg-gray-700/50 rounded-lg p-3 text-center">
+              <div class="text-lg font-bold text-cyan-400">{db.total_markets.toLocaleString()}</div>
+              <div class="text-[10px] text-gray-400">Total marches</div>
+            </div>
+            <div class="bg-gray-700/50 rounded-lg p-3 text-center">
+              <div class="text-lg font-bold text-gray-400">{db.unfetched.toLocaleString()}</div>
+              <div class="text-[10px] text-gray-400">Non recuperes</div>
+            </div>
+            <div class="bg-gray-700/50 rounded-lg p-3 text-center">
+              <div class="text-lg font-bold text-yellow-400">{db.fetched.toLocaleString()}</div>
+              <div class="text-[10px] text-gray-400">Recuperes</div>
+            </div>
+            <div class="bg-gray-700/50 rounded-lg p-3 text-center">
+              <div class="text-lg font-bold text-purple-400">{db.features_extracted.toLocaleString()}</div>
+              <div class="text-[10px] text-gray-400">Features extraites</div>
+            </div>
+            <div class="bg-gray-700/50 rounded-lg p-3 text-center">
+              <div class="text-lg font-bold text-emerald-400">{db.patterns.toLocaleString()}</div>
+              <div class="text-[10px] text-gray-400">Patterns</div>
+            </div>
+          </div>
+
+          {#if db.data_source}
+            <p class="text-[10px] text-gray-500">Source : {db.data_source}</p>
+          {/if}
+        </div>
+      {:else}
+        <p class="text-sm text-gray-400">
+          Lance l'analyse de ~35 000 marches BTC 15 minutes Polymarket sur 1 an.
+          Detecte des patterns dans les premieres 90-120 secondes qui predisent le resultat UP/DOWN.
+        </p>
+      {/if}
     {/if}
   </div>
 
@@ -458,10 +549,18 @@
     <div class="bg-gray-800 rounded-xl border border-gray-700 p-5">
       <div class="flex items-center justify-between mb-3">
         <h2 class="text-lg font-semibold text-white">Base de donnees</h2>
-        <button onclick={handleCleanup}
-          class="px-3 py-1.5 bg-gray-700 hover:bg-gray-600 rounded-lg text-sm text-white flex items-center gap-2">
-          <Trash2 size={14} /> Purge
-        </button>
+        <div class="flex gap-2">
+          <button onclick={handleCleanup}
+            class="px-3 py-1.5 bg-gray-700 hover:bg-gray-600 rounded-lg text-sm text-white flex items-center gap-2"
+            title="Supprime les prix bruts et les anciens snapshots (>30j)">
+            <Trash2 size={14} /> Purge prix/snapshots
+          </button>
+          <button onclick={handleFullReset}
+            class="px-3 py-1.5 bg-red-700 hover:bg-red-600 rounded-lg text-sm text-white flex items-center gap-2"
+            title="Supprime TOUTES les donnees orderbook (marches, prix, features, patterns, snapshots)">
+            <Trash2 size={14} /> Reset complet
+          </button>
+        </div>
       </div>
       <div class="grid grid-cols-2 md:grid-cols-5 gap-3">
         <div class="bg-gray-700/50 rounded-lg p-3 text-center">
