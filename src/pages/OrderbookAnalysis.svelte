@@ -278,22 +278,21 @@
       </div>
     {:else}
       {#if backtestStatus?.db_state && backtestStatus.db_state.total_markets > 0}
+        {@const db = backtestStatus.db_state}
+        {@const total = db.total_markets || 1}
+        {@const extractedPct = (db.features_extracted / total) * 100}
+        {@const actualFetchedOnly = db.fetched > db.features_extracted ? db.fetched - db.features_extracted : 0}
+        {@const fetchedOnlyPct = (actualFetchedOnly / total) * 100}
         <!-- DB state counters when idle -->
         <div class="space-y-3">
           <p class="text-sm text-gray-400">
-            Base de donnees existante — {backtestStatus.db_state.total_markets.toLocaleString()} marches en DB.
-            {#if backtestStatus.db_state.last_step}
-              Derniere etape : <span class="text-white">{backtestStatus.db_state.last_step}</span>.
+            Base de donnees existante — {db.total_markets.toLocaleString()} marches en DB.
+            {#if db.last_step}
+              Derniere etape : <span class="text-white">{db.last_step}</span>.
             {/if}
           </p>
 
           <!-- Progress bar: 3 segments -->
-          {@const db = backtestStatus.db_state}
-          {@const total = db.total_markets || 1}
-          {@const extractedPct = (db.features_extracted / total) * 100}
-          {@const fetchedPct = ((db.fetched - (db.features_extracted > db.fetched ? db.fetched : 0)) / total) * 100}
-          {@const actualFetchedOnly = db.fetched > db.features_extracted ? db.fetched - db.features_extracted : 0}
-          {@const fetchedOnlyPct = (actualFetchedOnly / total) * 100}
           <div class="w-full bg-gray-700 rounded-full h-3 overflow-hidden flex">
             {#if extractedPct > 0}
               <div class="bg-green-500 h-full transition-all" style="width: {extractedPct}%"
