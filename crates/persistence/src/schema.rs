@@ -248,6 +248,13 @@ CREATE TABLE IF NOT EXISTS ob_patterns (
     stability_score REAL,
     analysis_run_id TEXT,
     created_at INTEGER DEFAULT (strftime('%s','now'))
+);
+
+-- Backtest process state (key-value store for incremental resume)
+CREATE TABLE IF NOT EXISTS ob_backtest_state (
+    key TEXT PRIMARY KEY,
+    value TEXT NOT NULL,
+    updated_at INTEGER DEFAULT (strftime('%s','now'))
 )
 "#;
 

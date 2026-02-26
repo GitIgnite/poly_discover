@@ -1255,7 +1255,7 @@ async fn api_start_ob_backtest(
         );
     }
 
-    state.ob_backtest_progress.reset();
+    // Don't call progress.reset() — the orchestrator handles incremental resume
     // Set running state BEFORE spawning so the first poll sees it
     state.ob_backtest_progress.set_status(engine::ObBacktestStatus::Probing);
     state.ob_backtest_progress.set_step("Starting orderbook backtest...");
@@ -1307,6 +1307,34 @@ async fn api_ob_backtest_status(
 
     if let Some(err) = error {
         response["error"] = serde_json::json!(err);
+    }
+
+    // When not running, include db_state for frontend resume display
+    if !p.is_running() {
+        if let Ok(resume) = OrderbookRepository::get_resume_stats(state.db.pool()).await {
+            let last_step = OrderbookRepository::get_state(state.db.pool(), "last_step_completed")
+                .await
+                .ok()
+                .flatten();
+            let data_source_state = OrderbookRepository::get_state(state.db.pool(), "data_source")
+                .await
+                .ok()
+                .flatten();
+            let last_run = OrderbookRepository::get_state(state.db.pool(), "last_run_timestamp")
+                .await
+                .ok()
+                .flatten();
+            response["db_state"] = serde_json::json!({
+                "total_markets": resume.total,
+                "unfetched": resume.unfetched,
+                "fetched": resume.fetched,
+                "extracted": resume.extracted,
+                "patterns": resume.patterns,
+                "last_step": last_step,
+                "data_source": data_source_state,
+                "last_run_timestamp": last_run,
+            });
+        }
     }
 
     Json(response)
@@ -1443,9 +1471,25 @@ async fn api_ob_collector_status(
 
 async fn api_ob_cleanup(
     State(state): State<AppState>,
+    Query(params): Query<HashMap<String, String>>,
 ) -> (StatusCode, Json<serde_json::Value>) {
     let pool = state.db.pool();
+    let mode = params.get("mode").map(|s| s.as_str()).unwrap_or("partial");
 
+    if mode == "full" {
+        // Full reset: delete ALL orderbook data
+        let total = OrderbookRepository::full_reset(pool).await.unwrap_or(0);
+        return (
+            StatusCode::OK,
+            Json(serde_json::json!({
+                "success": true,
+                "mode": "full",
+                "total_deleted": total,
+            })),
+        );
+    }
+
+    // Partial purge: prices for extracted markets + old snapshots
     let prices_purged = OrderbookRepository::purge_prices_for_extracted(pool)
         .await
         .unwrap_or(0);
@@ -1457,6 +1501,7 @@ async fn api_ob_cleanup(
         StatusCode::OK,
         Json(serde_json::json!({
             "success": true,
+            "mode": "partial",
             "prices_purged": prices_purged,
             "snapshots_purged": snapshots_purged,
         })),

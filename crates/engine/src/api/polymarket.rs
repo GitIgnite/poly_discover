@@ -795,6 +795,127 @@ impl PolymarketDataClient {
         Ok(all_markets)
     }
 
+    /// Incremental discovery: only fetch NEW BTC 15-min markets since `since_end_time`.
+    /// Paginates newest-first and stops early when hitting markets older than the cutoff.
+    /// Returns only markets newer than `since_end_time`.
+    pub async fn get_new_btc_15min_markets(
+        &self,
+        since_end_time: i64,
+        on_progress: impl Fn(usize, u32),
+    ) -> Result<Vec<GammaMarket>> {
+        use tracing::info;
+
+        let mut new_markets = Vec::new();
+        let mut offset: u32 = 0;
+        let page_limit: u32 = 100;
+        let max_consecutive_old: u32 = 5; // stop after 5 pages where ALL BTC markets are old
+        let mut consecutive_old_pages: u32 = 0;
+
+        info!(
+            since_end_time,
+            "Incremental discovery: searching for markets newer than cutoff"
+        );
+
+        loop {
+            let page = self
+                .search_markets(offset, page_limit, Some(true), true)
+                .await?;
+            let page_len = page.len() as u32;
+
+            // Client-side filter for BTC short-term markets
+            let filtered: Vec<GammaMarket> = page
+                .into_iter()
+                .filter(|m| {
+                    if let Some(ref q) = m.question {
+                        let q_lower = q.to_lowercase();
+                        (q_lower.contains("bitcoin") || q_lower.contains("btc"))
+                            && (q_lower.contains("up or down")
+                                || q_lower.contains("go up")
+                                || q_lower.contains("above")
+                                || q_lower.contains("higher"))
+                    } else {
+                        false
+                    }
+                })
+                .collect();
+
+            if filtered.is_empty() {
+                // No BTC markets on this page — may still have newer pages ahead
+                // (non-BTC markets mixed in), so just continue
+                offset += page_limit;
+                if page_len < page_limit {
+                    break;
+                }
+                tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+                // Safety limit
+                if offset > 100_000 {
+                    break;
+                }
+                continue;
+            }
+
+            // Check how many of these BTC markets are newer than our cutoff
+            let mut any_new = false;
+            for m in &filtered {
+                let end_time = m
+                    .end_date
+                    .as_ref()
+                    .and_then(|d| {
+                        chrono::DateTime::parse_from_rfc3339(d)
+                            .ok()
+                            .or_else(|| {
+                                chrono::DateTime::parse_from_str(d, "%Y-%m-%dT%H:%M:%S%.fZ").ok()
+                            })
+                            .map(|dt| dt.timestamp())
+                    })
+                    .unwrap_or(0);
+
+                if end_time > since_end_time {
+                    any_new = true;
+                }
+            }
+
+            // Keep ALL from this page (INSERT OR IGNORE handles duplicates in DB)
+            new_markets.extend(filtered);
+            on_progress(new_markets.len(), offset);
+
+            if any_new {
+                consecutive_old_pages = 0;
+            } else {
+                consecutive_old_pages += 1;
+            }
+
+            if consecutive_old_pages >= max_consecutive_old {
+                info!(
+                    offset,
+                    total = new_markets.len(),
+                    "Incremental discovery: {} consecutive pages with only old markets, stopping",
+                    max_consecutive_old
+                );
+                break;
+            }
+
+            if page_len < page_limit {
+                break;
+            }
+
+            offset += page_limit;
+            tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+
+            // Safety limit
+            if offset > 100_000 {
+                info!("Incremental discovery: reached safety pagination limit");
+                break;
+            }
+        }
+
+        info!(
+            total = new_markets.len(),
+            "Incremental discovery complete"
+        );
+        Ok(new_markets)
+    }
+
     /// CLOB: Get price history for a market. `market_id` should be a token_id.
     pub async fn get_prices_history(
         &self,

@@ -130,6 +130,16 @@ pub struct DbSizeStats {
     pub ob_patterns: i64,
 }
 
+/// Resume stats: counts of markets in each state for incremental resume.
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+pub struct ResumeStats {
+    pub total: i64,
+    pub unfetched: i64,
+    pub fetched: i64,
+    pub extracted: i64,
+    pub patterns: i64,
+}
+
 // ---------------------------------------------------------------------------
 // Repository
 // ---------------------------------------------------------------------------
@@ -561,5 +571,99 @@ impl OrderbookRepository {
             ob_snapshots: s,
             ob_patterns: pa,
         })
+    }
+
+    // =======================================================================
+    // Incremental Resume — State Persistence
+    // =======================================================================
+
+    /// Get resume stats: counts of markets in each processing state.
+    pub async fn get_resume_stats(pool: &SqlitePool) -> DbResult<ResumeStats> {
+        let (total,): (i64,) = sqlx::query_as("SELECT COUNT(*) FROM ob_markets")
+            .fetch_one(pool)
+            .await?;
+        let (unfetched,): (i64,) =
+            sqlx::query_as("SELECT COUNT(*) FROM ob_markets WHERE data_fetched = 0")
+                .fetch_one(pool)
+                .await?;
+        let (fetched,): (i64,) =
+            sqlx::query_as("SELECT COUNT(*) FROM ob_markets WHERE data_fetched = 1")
+                .fetch_one(pool)
+                .await?;
+        let (extracted,): (i64,) =
+            sqlx::query_as("SELECT COUNT(*) FROM ob_markets WHERE data_fetched = 2")
+                .fetch_one(pool)
+                .await?;
+        let (patterns,): (i64,) = sqlx::query_as("SELECT COUNT(*) FROM ob_patterns")
+            .fetch_one(pool)
+            .await?;
+        Ok(ResumeStats {
+            total,
+            unfetched,
+            fetched,
+            extracted,
+            patterns,
+        })
+    }
+
+    /// Get a persisted state value by key.
+    pub async fn get_state(pool: &SqlitePool, key: &str) -> DbResult<Option<String>> {
+        let row: Option<(String,)> =
+            sqlx::query_as("SELECT value FROM ob_backtest_state WHERE key = ?1")
+                .bind(key)
+                .fetch_optional(pool)
+                .await?;
+        Ok(row.map(|(v,)| v))
+    }
+
+    /// Set a persisted state value (INSERT OR REPLACE).
+    pub async fn set_state(pool: &SqlitePool, key: &str, value: &str) -> DbResult<()> {
+        sqlx::query(
+            "INSERT OR REPLACE INTO ob_backtest_state (key, value, updated_at) VALUES (?1, ?2, strftime('%s','now'))",
+        )
+        .bind(key)
+        .bind(value)
+        .execute(pool)
+        .await?;
+        Ok(())
+    }
+
+    /// Get the latest market end_time from ob_markets (for incremental discovery).
+    pub async fn get_latest_market_end_time(pool: &SqlitePool) -> DbResult<Option<i64>> {
+        let row: Option<(Option<i64>,)> =
+            sqlx::query_as("SELECT MAX(end_time) FROM ob_markets")
+                .fetch_optional(pool)
+                .await?;
+        Ok(row.and_then(|(v,)| v))
+    }
+
+    /// Full reset: delete ALL orderbook data from all tables.
+    pub async fn full_reset(pool: &SqlitePool) -> DbResult<u64> {
+        let mut total = 0u64;
+        total += sqlx::query("DELETE FROM ob_patterns")
+            .execute(pool)
+            .await?
+            .rows_affected();
+        total += sqlx::query("DELETE FROM ob_market_features")
+            .execute(pool)
+            .await?
+            .rows_affected();
+        total += sqlx::query("DELETE FROM ob_market_prices")
+            .execute(pool)
+            .await?
+            .rows_affected();
+        total += sqlx::query("DELETE FROM ob_snapshots")
+            .execute(pool)
+            .await?
+            .rows_affected();
+        total += sqlx::query("DELETE FROM ob_markets")
+            .execute(pool)
+            .await?
+            .rows_affected();
+        total += sqlx::query("DELETE FROM ob_backtest_state")
+            .execute(pool)
+            .await?
+            .rows_affected();
+        Ok(total)
     }
 }
