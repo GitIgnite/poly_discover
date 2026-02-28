@@ -15,6 +15,7 @@
   let selectedWindow = $state('all');
   let selectedType = $state('all');
   let loading = $state(false);
+  let lookbackDays = $state(30);
 
   const statusSteps = [
     { key: 'Probing', label: 'Probing data sources', color: 'text-blue-400' },
@@ -55,7 +56,7 @@
 
   async function handleStartBacktest() {
     loading = true;
-    await startObBacktest();
+    await startObBacktest(lookbackDays);
     // Optimistic UI: show progress immediately before next poll
     backtestStatus = { running: true, status: 'Probing', current_step: 'Starting orderbook backtest...', logs: [] };
     loading = false;
@@ -100,7 +101,7 @@
 
   function getAdaptiveButtonText(dbState) {
     if (!dbState || dbState.total_markets === 0) {
-      return 'Analyser 1 an de marches BTC 15-min';
+      return `Analyser ${lookbackDays}j de marches BTC 15-min`;
     }
     if (dbState.unfetched > 0) {
       return `Reprendre l'analyse (${dbState.unfetched.toLocaleString()} restants)`;
@@ -199,6 +200,15 @@
             <Square size={14} /> Annuler
           </button>
         {:else}
+          <select bind:value={lookbackDays}
+            class="px-2 py-2 bg-gray-700 text-white rounded-lg text-sm border border-gray-600">
+            <option value={7}>7 jours</option>
+            <option value={14}>14 jours</option>
+            <option value={30}>30 jours</option>
+            <option value={90}>90 jours</option>
+            <option value={180}>6 mois</option>
+            <option value={365}>1 an</option>
+          </select>
           <button onclick={handleStartBacktest} disabled={loading}
             class="px-4 py-2 bg-orange-600 hover:bg-orange-700 text-white rounded-lg text-sm flex items-center gap-2 disabled:opacity-50">
             <Play size={14} /> {getAdaptiveButtonText(backtestStatus?.db_state)}

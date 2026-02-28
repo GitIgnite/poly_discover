@@ -1247,6 +1247,7 @@ async fn api_profile_history(
 
 async fn api_start_ob_backtest(
     State(state): State<AppState>,
+    Query(params): Query<HashMap<String, String>>,
 ) -> (StatusCode, Json<serde_json::Value>) {
     if state.ob_backtest_progress.is_running() {
         return (
@@ -1255,23 +1256,28 @@ async fn api_start_ob_backtest(
         );
     }
 
+    let lookback_days: u32 = params
+        .get("lookback_days")
+        .and_then(|v| v.parse().ok())
+        .unwrap_or(30);
+
     // Don't call progress.reset() — the orchestrator handles incremental resume
     // Set running state BEFORE spawning so the first poll sees it
     state.ob_backtest_progress.set_status(engine::ObBacktestStatus::Probing);
     state.ob_backtest_progress.set_step("Starting orderbook backtest...");
-    state.ob_backtest_progress.add_log("Orderbook backtest started");
+    state.ob_backtest_progress.add_log(&format!("Orderbook backtest started (lookback: {} days)", lookback_days));
 
     let progress = Arc::clone(&state.ob_backtest_progress);
     let client = Arc::clone(&state.polymarket);
     let db_pool = state.db.pool_clone();
 
     tokio::spawn(async move {
-        run_orderbook_backtest(&progress, &client, db_pool).await;
+        run_orderbook_backtest(&progress, &client, db_pool, lookback_days).await;
     });
 
     (
         StatusCode::OK,
-        Json(serde_json::json!({ "success": true, "message": "Orderbook backtest started" })),
+        Json(serde_json::json!({ "success": true, "message": format!("Orderbook backtest started ({} days lookback)", lookback_days) })),
     )
 }
 

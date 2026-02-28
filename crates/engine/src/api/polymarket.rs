@@ -705,6 +705,7 @@ impl PolymarketDataClient {
     /// `on_progress` is called after each page with (total_found, offset).
     pub async fn get_all_btc_15min_markets(
         &self,
+        cancelled: &std::sync::atomic::AtomicBool,
         on_progress: impl Fn(usize, u32),
     ) -> Result<Vec<GammaMarket>> {
         use tracing::info;
@@ -717,6 +718,11 @@ impl PolymarketDataClient {
         let mut consecutive_empty: u32 = 0;
 
         loop {
+            if cancelled.load(std::sync::atomic::Ordering::Relaxed) {
+                info!(total = all_markets.len(), "Discovery cancelled by user");
+                break;
+            }
+
             let page = self.search_markets(offset, page_limit, Some(true), true).await?;
             let page_len = page.len() as u32;
 
@@ -801,6 +807,7 @@ impl PolymarketDataClient {
     pub async fn get_new_btc_15min_markets(
         &self,
         since_end_time: i64,
+        cancelled: &std::sync::atomic::AtomicBool,
         on_progress: impl Fn(usize, u32),
     ) -> Result<Vec<GammaMarket>> {
         use tracing::info;
@@ -817,6 +824,11 @@ impl PolymarketDataClient {
         );
 
         loop {
+            if cancelled.load(std::sync::atomic::Ordering::Relaxed) {
+                info!(total = new_markets.len(), "Incremental discovery cancelled by user");
+                break;
+            }
+
             let page = self
                 .search_markets(offset, page_limit, Some(true), true)
                 .await?;

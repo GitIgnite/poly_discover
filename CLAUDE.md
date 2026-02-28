@@ -427,6 +427,29 @@ Ports à ouvrir dans le Security Group EC2 :
 
 ## Historique des changements récents
 
+### Fix Cancel Orderbook Backtest + Lookback 30 jours (2026-02-28)
+
+**3 bug fixes + 1 amélioration** pour le backtest Orderbook :
+
+1. **Cancel ne fonctionnait pas** : quand l'utilisateur cliquait "Annuler", le flag `cancelled` était bien positionné mais le statut restait à l'étape en cours (ex: `FetchingData`). Comme `is_running()` vérifie `!matches!(Idle|Complete|Error)`, le frontend voyait toujours `running: true` et le bouton Annuler restait affiché. **Fix** : nouvelle méthode `handle_cancellation()` qui met le statut à `Idle` + ajoute un log "cancelled by user". Tous les 12 points de vérification utilisent maintenant `handle_cancellation()`.
+
+2. **Cancel ignoré pendant la pagination API** : les fonctions `get_all_btc_15min_markets()` et `get_new_btc_15min_markets()` ne vérifiaient pas le flag d'annulation, donc un cancel pendant la discovery de marchés (~35K) pouvait prendre 30+ minutes avant de prendre effet. **Fix** : ces fonctions acceptent maintenant un `&AtomicBool` et vérifient le flag à chaque page.
+
+3. **Découverte de TOUS les marchés (35K+) au lieu d'un sous-ensemble** : la première exécution découvrait tous les marchés depuis la création de Polymarket, ce qui prenait 30+ minutes juste pour la pagination. **Fix** : nouveau paramètre `lookback_days` (défaut 30) qui limite la découverte aux marchés des N derniers jours. Toujours utilise `get_new_btc_15min_markets()` avec un cutoff temporel au lieu de `get_all_btc_15min_markets()`.
+
+4. **Frontend : sélecteur de période** : dropdown pour choisir 7j/14j/30j/90j/6mois/1an avant de lancer l'analyse. Le bouton affiche la période sélectionnée.
+
+**Fichiers modifiés (4) :**
+- `crates/engine/src/orderbook_backtest.rs` — `handle_cancellation()` method, `run_orderbook_backtest()` accepte `lookback_days: u32`, discovery toujours via `get_new_btc_15min_markets()` avec cutoff
+- `crates/engine/src/api/polymarket.rs` — `get_all_btc_15min_markets()` et `get_new_btc_15min_markets()` acceptent `&AtomicBool` pour cancel, check dans les boucles de pagination
+- `crates/server/src/main.rs` — `api_start_ob_backtest()` accepte `Query` param `lookback_days` (défaut 30)
+- `src/lib/api.js` — `startObBacktest(lookbackDays)` passe le paramètre
+- `src/pages/OrderbookAnalysis.svelte` — sélecteur période (7j-1an), `lookbackDays` state var
+
+**Tests : 93 (inchangés)** — tous passent.
+
+---
+
 ### Orderbook Backtest — Reprise incrémentale + purge + fix patterns (2026-02-26)
 
 **Feature** : le backtest orderbook reprend automatiquement là où il s'est arrêté au lieu de tout recommencer de zéro. Correction de la détection de patterns et amélioration de la purge.

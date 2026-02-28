@@ -271,9 +271,9 @@ export async function getProfileHistory() {
 // Orderbook Backtest
 // ============================================================================
 
-export async function startObBacktest() {
+export async function startObBacktest(lookbackDays = 30) {
   try {
-    return await apiCall('/api/orderbook/analyze', { method: 'POST' });
+    return await apiCall(`/api/orderbook/analyze?lookback_days=${lookbackDays}`, { method: 'POST' });
   } catch (e) {
     return { success: false, message: String(e) };
   }

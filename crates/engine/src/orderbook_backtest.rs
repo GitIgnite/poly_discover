@@ -118,6 +118,19 @@ impl ObBacktestProgress {
     fn is_cancelled(&self) -> bool {
         self.cancelled.load(Ordering::Relaxed)
     }
+
+    /// Check cancellation and set status to Idle if cancelled.
+    /// Returns true if cancelled (caller should return immediately).
+    pub fn handle_cancellation(&self) -> bool {
+        if self.is_cancelled() {
+            self.add_log("Backtest cancelled by user");
+            *self.status.write().unwrap() = ObBacktestStatus::Idle;
+            *self.current_step.write().unwrap() = "Cancelled".to_string();
+            true
+        } else {
+            false
+        }
+    }
 }
 
 impl Default for ObBacktestProgress {
@@ -167,6 +180,7 @@ pub async fn run_orderbook_backtest(
     progress: &ObBacktestProgress,
     client: &PolymarketDataClient,
     db_pool: SqlitePool,
+    lookback_days: u32,
 ) {
     // Soft reset: keep counters, clear control flags and logs
     progress.cancelled.store(false, Ordering::Relaxed);
@@ -262,9 +276,9 @@ pub async fn run_orderbook_backtest(
         data_source
     };
 
-    if progress.is_cancelled() { return; }
+    if progress.handle_cancellation() { return; }
 
-    // Step 2: Discover markets (incremental if DB has data)
+    // Step 2: Discover markets (always incremental with lookback_days cutoff)
     progress.set_status(ObBacktestStatus::DiscoveringMarkets);
     progress.set_step("Discovering BTC 15-min markets via Gamma API...");
 
@@ -273,60 +287,40 @@ pub async fn run_orderbook_backtest(
         .ok()
         .flatten();
 
-    let markets = if let Some(since) = latest_end_time {
-        // Incremental: only fetch markets newer than what we have
-        progress.add_log(&format!(
-            "Incremental discovery since {} ({} markets in DB)",
-            since, resume.total
-        ));
-        info!(
-            since_end_time = since,
-            existing = resume.total,
-            "Incremental market discovery"
-        );
+    // Use the most recent cutoff: either DB state or lookback_days ago
+    let lookback_cutoff = Utc::now().timestamp() - (lookback_days as i64 * 86400);
+    let since = latest_end_time
+        .map(|db_since| db_since.max(lookback_cutoff))
+        .unwrap_or(lookback_cutoff);
 
-        match client
-            .get_new_btc_15min_markets(since, |total_found, offset| {
-                progress
-                    .markets_discovered
-                    .store((resume.total as usize + total_found) as u32, Ordering::Relaxed);
-                progress.set_step(&format!(
-                    "Incremental discovery... {} new found (page {})",
-                    total_found,
-                    offset / 100
-                ));
-            })
-            .await
-        {
-            Ok(m) => m,
-            Err(e) => {
-                progress.set_error(format!("Market discovery failed: {}", e));
-                return;
-            }
-        }
-    } else {
-        // Full discovery (first run)
-        progress.add_log("Full discovery (no existing markets in DB)");
-        info!("Full market discovery (first run)");
+    progress.add_log(&format!(
+        "Discovery: lookback {} days, {} markets in DB, cutoff={}",
+        lookback_days, resume.total, since
+    ));
+    info!(
+        lookback_days,
+        since_end_time = since,
+        existing = resume.total,
+        "Market discovery with lookback"
+    );
 
-        match client
-            .get_all_btc_15min_markets(|total_found, offset| {
-                progress
-                    .markets_discovered
-                    .store(total_found as u32, Ordering::Relaxed);
-                progress.set_step(&format!(
-                    "Discovering markets... {} found (page {})",
-                    total_found,
-                    offset / 100
-                ));
-            })
-            .await
-        {
-            Ok(m) => m,
-            Err(e) => {
-                progress.set_error(format!("Market discovery failed: {}", e));
-                return;
-            }
+    let markets = match client
+        .get_new_btc_15min_markets(since, &progress.cancelled, |total_found, offset| {
+            progress
+                .markets_discovered
+                .store((resume.total as usize + total_found) as u32, Ordering::Relaxed);
+            progress.set_step(&format!(
+                "Discovering markets... {} found (page {})",
+                total_found,
+                offset / 100
+            ));
+        })
+        .await
+    {
+        Ok(m) => m,
+        Err(e) => {
+            progress.set_error(format!("Market discovery failed: {}", e));
+            return;
         }
     };
 
@@ -362,7 +356,7 @@ pub async fn run_orderbook_backtest(
 
     let _ = OrderbookRepository::set_state(&db_pool, "last_step_completed", "discovering").await;
 
-    if progress.is_cancelled() { return; }
+    if progress.handle_cancellation() { return; }
 
     // Step 3: Fetch data for unfetched markets
     progress.set_status(ObBacktestStatus::FetchingData);
@@ -371,7 +365,7 @@ pub async fn run_orderbook_backtest(
 
     let batch_size = 1000i64;
     loop {
-        if progress.is_cancelled() { return; }
+        if progress.handle_cancellation() { return; }
 
         let unfetched = match OrderbookRepository::get_unfetched_markets(&db_pool, batch_size).await {
             Ok(m) => m,
@@ -389,7 +383,7 @@ pub async fn run_orderbook_backtest(
         let total = total_after_discovery;
 
         for market in &unfetched {
-            if progress.is_cancelled() { return; }
+            if progress.handle_cancellation() { return; }
 
             let market_id = market.id.unwrap_or(0);
             progress.set_step(&format!(
@@ -448,7 +442,7 @@ pub async fn run_orderbook_backtest(
 
     let _ = OrderbookRepository::set_state(&db_pool, "last_step_completed", "fetching").await;
 
-    if progress.is_cancelled() { return; }
+    if progress.handle_cancellation() { return; }
 
     // Step 4: Extract features
     progress.set_status(ObBacktestStatus::ExtractingFeatures);
@@ -458,7 +452,7 @@ pub async fn run_orderbook_backtest(
 
     let batch_size = 1000i64;
     loop {
-        if progress.is_cancelled() { return; }
+        if progress.handle_cancellation() { return; }
 
         let fetched_markets = match OrderbookRepository::get_fetched_markets(&db_pool, batch_size).await {
             Ok(m) => m,
@@ -474,7 +468,7 @@ pub async fn run_orderbook_backtest(
         }
 
         for market in &fetched_markets {
-            if progress.is_cancelled() { return; }
+            if progress.handle_cancellation() { return; }
 
             let market_id = market.id.unwrap_or(0);
             let prices = match OrderbookRepository::get_prices_for_market(&db_pool, market_id).await {
@@ -509,7 +503,7 @@ pub async fn run_orderbook_backtest(
 
     let _ = OrderbookRepository::set_state(&db_pool, "last_step_completed", "extracting").await;
 
-    if progress.is_cancelled() { return; }
+    if progress.handle_cancellation() { return; }
 
     // Step 5: Detect patterns (always re-runs on all accumulated features)
     progress.set_status(ObBacktestStatus::DetectingPatterns);
@@ -522,7 +516,7 @@ pub async fn run_orderbook_backtest(
 
     // Univariate + multivariate patterns per time window
     for &window in TIME_WINDOWS {
-        if progress.is_cancelled() { return; }
+        if progress.handle_cancellation() { return; }
 
         let features = match OrderbookRepository::get_all_features_for_window(&db_pool, window).await {
             Ok(f) => f,
@@ -617,7 +611,7 @@ pub async fn run_orderbook_backtest(
     )
     .await;
 
-    if progress.is_cancelled() { return; }
+    if progress.handle_cancellation() { return; }
 
     // Step 6: Cleanup
     progress.set_status(ObBacktestStatus::Cleanup);
