@@ -13,7 +13,7 @@ use serde::Serialize;
 use std::collections::HashMap;
 use std::sync::atomic::{AtomicBool, AtomicU32, Ordering};
 use std::sync::RwLock;
-use tracing::{debug, error, info, warn};
+use tracing::{error, info, warn};
 
 /// Time windows (seconds) at which features are extracted
 pub const TIME_WINDOWS: &[i64] = &[30, 60, 90, 120, 180, 300];
@@ -363,6 +363,7 @@ pub async fn run_orderbook_backtest(
     progress.set_step("Fetching price data for markets...");
     progress.add_log("Fetching price data for unfetched markets...");
 
+    let mut fetch_stats = (0u32, 0u32); // (total_fetched, with_data)
     let batch_size = 1000i64;
     loop {
         if progress.handle_cancellation() { return; }
@@ -409,7 +410,9 @@ pub async fn run_orderbook_backtest(
             )
             .await;
 
+            fetch_stats.0 += 1;
             if !prices.is_empty() {
+                fetch_stats.1 += 1;
                 let price_records: Vec<persistence::repository::orderbook::ObPriceRecord> = prices
                     .iter()
                     .map(|p| persistence::repository::orderbook::ObPriceRecord {
@@ -440,6 +443,14 @@ pub async fn run_orderbook_backtest(
         }
     }
 
+    if fetch_stats.0 > 0 {
+        progress.add_log(&format!(
+            "Fetch stats: {}/{} markets had price data ({:.0}%)",
+            fetch_stats.1, fetch_stats.0,
+            (fetch_stats.1 as f64 / fetch_stats.0 as f64) * 100.0
+        ));
+    }
+
     let _ = OrderbookRepository::set_state(&db_pool, "last_step_completed", "fetching").await;
 
     if progress.handle_cancellation() { return; }
@@ -450,6 +461,7 @@ pub async fn run_orderbook_backtest(
     progress.add_log("Extracting features from market data...");
     info!("Orderbook backtest: extracting features");
 
+    let mut extract_stats = (0u32, 0u32, 0u32, 0u32); // (total, with_data, with_outcome, up_count)
     let batch_size = 1000i64;
     loop {
         if progress.handle_cancellation() { return; }
@@ -470,6 +482,7 @@ pub async fn run_orderbook_backtest(
         for market in &fetched_markets {
             if progress.handle_cancellation() { return; }
 
+            extract_stats.0 += 1;
             let market_id = market.id.unwrap_or(0);
             let prices = match OrderbookRepository::get_prices_for_market(&db_pool, market_id).await {
                 Ok(p) => p,
@@ -482,11 +495,18 @@ pub async fn run_orderbook_backtest(
                 continue;
             }
 
+            extract_stats.1 += 1;
+
+            let has_outcome = market.outcome.is_some();
+            if has_outcome { extract_stats.2 += 1; }
+
             let outcome_is_up = market
                 .outcome
                 .as_ref()
                 .map(|o| o.to_lowercase().contains("up") || o.to_lowercase() == "yes")
                 .unwrap_or(false);
+
+            if outcome_is_up { extract_stats.3 += 1; }
 
             let feature_records = extract_features_for_market(market_id, &prices, outcome_is_up);
 
@@ -500,6 +520,19 @@ pub async fn run_orderbook_backtest(
             progress.features_extracted.fetch_add(1, Ordering::Relaxed);
         }
     }
+
+    progress.add_log(&format!(
+        "Extraction stats: {} markets processed, {} with data, {} with outcome ({} UP, {} DOWN)",
+        extract_stats.0, extract_stats.1, extract_stats.2,
+        extract_stats.3, extract_stats.2.saturating_sub(extract_stats.3)
+    ));
+    info!(
+        total = extract_stats.0,
+        with_data = extract_stats.1,
+        with_outcome = extract_stats.2,
+        up = extract_stats.3,
+        "Feature extraction stats"
+    );
 
     let _ = OrderbookRepository::set_state(&db_pool, "last_step_completed", "extracting").await;
 
@@ -523,8 +556,16 @@ pub async fn run_orderbook_backtest(
             Err(_) => continue,
         };
 
-        if features.len() < 50 {
-            debug!(window, count = features.len(), "Not enough features for pattern detection");
+        // Count outcome distribution for this window
+        let up_in_window = features.iter().filter(|f| f.outcome_is_up == Some(1)).count();
+        let down_in_window = features.len() - up_in_window;
+        progress.add_log(&format!(
+            "Window {}s: {} features ({} UP, {} DOWN)",
+            window, features.len(), up_in_window, down_in_window
+        ));
+
+        if features.len() < 20 {
+            progress.add_log(&format!("Window {}s: skipped (< 20 features)", window));
             continue;
         }
 
@@ -532,6 +573,11 @@ pub async fn run_orderbook_backtest(
 
         let univariate = detect_univariate_patterns(&features, window);
         let multivariate = detect_multivariate_patterns(&features, &univariate, window);
+
+        progress.add_log(&format!(
+            "Window {}s: {} univariate + {} multivariate patterns",
+            window, univariate.len(), multivariate.len()
+        ));
 
         all_patterns.extend(univariate);
         all_patterns.extend(multivariate);
@@ -542,7 +588,7 @@ pub async fn run_orderbook_backtest(
         Ok(f) => f,
         Err(_) => HashMap::new(),
     };
-    if features_grouped.len() >= 50 {
+    if features_grouped.len() >= 20 {
         let sequence = detect_sequence_patterns(&features_grouped);
         all_patterns.extend(sequence);
     }
@@ -1076,7 +1122,7 @@ fn detect_univariate_patterns(
             })
             .collect();
 
-        if values_with_outcome.len() < 100 {
+        if values_with_outcome.len() < 30 {
             continue;
         }
 
@@ -1149,8 +1195,8 @@ fn find_best_threshold(
         }
     }
 
-    // Filter: accuracy > 55%, sample_size > 100
-    if best_accuracy <= 0.55 || values.len() < 100 {
+    // Filter: accuracy > 52%, sample_size > 30
+    if best_accuracy <= 0.52 || values.len() < 30 {
         return None;
     }
 
@@ -1166,7 +1212,7 @@ fn find_best_threshold(
     let (acc_second, _, _, _) = compute_classification_metrics(second_half, best_threshold, best_above, predict_up);
     let stability = 1.0 - (acc_first - acc_second).abs();
 
-    if stability < 0.7 {
+    if stability < 0.5 {
         return None;
     }
 
@@ -1289,7 +1335,7 @@ fn detect_multivariate_patterns(
                 })
                 .collect();
 
-            if values.len() < 100 {
+            if values.len() < 30 {
                 continue;
             }
 
@@ -1362,7 +1408,7 @@ fn find_best_multivariate_pair(
         }
     }
 
-    if best_accuracy <= 0.58 || n < 100 {
+    if best_accuracy <= 0.54 || n < 30 {
         return None;
     }
 
@@ -1394,7 +1440,7 @@ fn find_best_multivariate_pair(
         / second_half.len() as f64;
 
     let stability = 1.0 - (acc_first - acc_second).abs();
-    if stability < 0.7 {
+    if stability < 0.5 {
         return None;
     }
 
@@ -1503,7 +1549,7 @@ fn detect_sequence_patterns(
             })
             .collect();
 
-        if sequences.len() < 100 {
+        if sequences.len() < 30 {
             continue;
         }
 
@@ -1525,7 +1571,7 @@ fn detect_sequence_patterns(
                 .count();
 
             let accuracy = correct as f64 / sequences.len() as f64;
-            if accuracy > 0.55 {
+            if accuracy > 0.52 {
                 let mid = sequences.len() / 2;
                 let acc_first = sequences[..mid]
                     .iter()
