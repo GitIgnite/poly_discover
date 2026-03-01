@@ -15,6 +15,8 @@
   let selectedWindow = $state('all');
   let selectedType = $state('all');
   let loading = $state(false);
+  let refetching = $state(false);
+  let toastMessage = $state(null);
   let lookbackDays = $state(30);
 
   const statusSteps = [
@@ -86,12 +88,22 @@
     }
   }
 
+  function showToast(msg, duration = 4000) {
+    toastMessage = msg;
+    setTimeout(() => { toastMessage = null; }, duration);
+  }
+
   async function handleRefetch() {
     if (confirm('Remettre tous les marches en "non-fetched" pour re-telecharger les donnees de prix ? (Les marches decouverts seront conserves)')) {
+      refetching = true;
       const result = await obCleanup('refetch');
+      refetching = false;
       if (result.success) {
+        showToast(`${result.total_reset?.toLocaleString() || ''} marches reinitialises. Cliquez sur Analyser pour relancer.`);
         loadStats();
         pollBacktest();
+      } else {
+        showToast('Erreur lors du refetch');
       }
     }
   }
@@ -188,6 +200,12 @@
     return result;
   }
 </script>
+
+{#if toastMessage}
+  <div class="fixed top-4 right-4 z-50 bg-green-600 text-white px-4 py-3 rounded-lg shadow-lg text-sm animate-pulse">
+    {toastMessage}
+  </div>
+{/if}
 
 <div class="p-4 md:p-6 space-y-6">
   <!-- Header -->
@@ -569,10 +587,14 @@
       <div class="flex items-center justify-between mb-3">
         <h2 class="text-lg font-semibold text-white">Base de donnees</h2>
         <div class="flex gap-2">
-          <button onclick={handleRefetch}
-            class="px-3 py-1.5 bg-yellow-700 hover:bg-yellow-600 rounded-lg text-sm text-white flex items-center gap-2"
+          <button onclick={handleRefetch} disabled={refetching}
+            class="px-3 py-1.5 bg-yellow-700 hover:bg-yellow-600 rounded-lg text-sm text-white flex items-center gap-2 disabled:opacity-50"
             title="Garde les marches, remet le statut a 'non-fetched' pour re-telecharger les prix">
-            <RefreshCw size={14} /> Re-fetch prix
+            {#if refetching}
+              <RefreshCw size={14} class="animate-spin" /> Re-fetch en cours...
+            {:else}
+              <RefreshCw size={14} /> Re-fetch prix
+            {/if}
           </button>
           <button onclick={handleCleanup}
             class="px-3 py-1.5 bg-gray-700 hover:bg-gray-600 rounded-lg text-sm text-white flex items-center gap-2"
