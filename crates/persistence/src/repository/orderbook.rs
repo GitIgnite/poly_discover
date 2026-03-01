@@ -637,6 +637,33 @@ impl OrderbookRepository {
         Ok(row.and_then(|(v,)| v))
     }
 
+    /// Reset fetch status: set all markets back to unfetched, delete features and prices.
+    /// Keeps market metadata intact so they don't need to be re-discovered.
+    pub async fn reset_fetch_status(pool: &SqlitePool) -> DbResult<u64> {
+        let mut total = 0u64;
+        total += sqlx::query("DELETE FROM ob_patterns")
+            .execute(pool)
+            .await?
+            .rows_affected();
+        total += sqlx::query("DELETE FROM ob_market_features")
+            .execute(pool)
+            .await?
+            .rows_affected();
+        total += sqlx::query("DELETE FROM ob_market_prices")
+            .execute(pool)
+            .await?
+            .rows_affected();
+        total += sqlx::query("UPDATE ob_markets SET data_fetched = 0, data_points_count = 0")
+            .execute(pool)
+            .await?
+            .rows_affected();
+        // Reset backtest state so it re-fetches
+        let _ = sqlx::query("DELETE FROM ob_backtest_state WHERE key = 'last_step_completed'")
+            .execute(pool)
+            .await;
+        Ok(total)
+    }
+
     /// Full reset: delete ALL orderbook data from all tables.
     pub async fn full_reset(pool: &SqlitePool) -> DbResult<u64> {
         let mut total = 0u64;

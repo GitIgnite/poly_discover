@@ -86,6 +86,16 @@
     }
   }
 
+  async function handleRefetch() {
+    if (confirm('Remettre tous les marches en "non-fetched" pour re-telecharger les donnees de prix ? (Les marches decouverts seront conserves)')) {
+      const result = await obCleanup('refetch');
+      if (result.success) {
+        loadStats();
+        pollBacktest();
+      }
+    }
+  }
+
   async function handleFullReset() {
     if (confirm('ATTENTION : Ceci va supprimer TOUTES les donnees orderbook (marches, prix, features, patterns, snapshots). Continuer ?')) {
       if (confirm('Derniere confirmation : reset complet de toutes les tables orderbook ?')) {
@@ -559,6 +569,11 @@
       <div class="flex items-center justify-between mb-3">
         <h2 class="text-lg font-semibold text-white">Base de donnees</h2>
         <div class="flex gap-2">
+          <button onclick={handleRefetch}
+            class="px-3 py-1.5 bg-yellow-700 hover:bg-yellow-600 rounded-lg text-sm text-white flex items-center gap-2"
+            title="Garde les marches, remet le statut a 'non-fetched' pour re-telecharger les prix">
+            <RefreshCw size={14} /> Re-fetch prix
+          </button>
           <button onclick={handleCleanup}
             class="px-3 py-1.5 bg-gray-700 hover:bg-gray-600 rounded-lg text-sm text-white flex items-center gap-2"
             title="Supprime les prix bruts et les anciens snapshots (>30j)">

@@ -858,11 +858,10 @@ async fn fetch_market_data(
             match client.get_prices_history(market_id, start_time, end_time).await {
                 Ok(points) => points
                     .into_iter()
-                    .filter_map(|p| {
-                        let price = p.p.parse::<f64>().ok()?;
-                        let ts_ms = p.t * 1000; // Assume t is seconds
+                    .map(|p| {
+                        let ts_ms = p.t * 1000;
                         let elapsed = (p.t - start_time) as f64;
-                        Some((ts_ms, elapsed, price, None, None))
+                        (ts_ms, elapsed, p.p, None, None)
                     })
                     .collect(),
                 Err(_) => Vec::new(),

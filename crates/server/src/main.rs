@@ -1482,6 +1482,20 @@ async fn api_ob_cleanup(
     let pool = state.db.pool();
     let mode = params.get("mode").map(|s| s.as_str()).unwrap_or("partial");
 
+    if mode == "refetch" {
+        // Reset fetch status: keep markets, re-fetch data
+        let total = OrderbookRepository::reset_fetch_status(pool).await.unwrap_or(0);
+        return (
+            StatusCode::OK,
+            Json(serde_json::json!({
+                "success": true,
+                "mode": "refetch",
+                "total_reset": total,
+                "message": "Markets kept, fetch status reset. Re-run backtest to fetch data.",
+            })),
+        );
+    }
+
     if mode == "full" {
         // Full reset: delete ALL orderbook data
         let total = OrderbookRepository::full_reset(pool).await.unwrap_or(0);

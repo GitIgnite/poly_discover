@@ -8,6 +8,42 @@ use reqwest::Client;
 use serde::{de::DeserializeOwned, Deserialize, Serialize};
 use tracing::debug;
 
+/// Deserialize a price that can be either a JSON number (0.505) or a string ("0.505").
+fn deserialize_price<'de, D>(deserializer: D) -> std::result::Result<f64, D::Error>
+where
+    D: serde::Deserializer<'de>,
+{
+    use serde::de;
+
+    struct PriceVisitor;
+
+    impl<'de> de::Visitor<'de> for PriceVisitor {
+        type Value = f64;
+
+        fn expecting(&self, formatter: &mut std::fmt::Formatter) -> std::fmt::Result {
+            formatter.write_str("a number or string representing a price")
+        }
+
+        fn visit_f64<E: de::Error>(self, v: f64) -> std::result::Result<f64, E> {
+            Ok(v)
+        }
+
+        fn visit_i64<E: de::Error>(self, v: i64) -> std::result::Result<f64, E> {
+            Ok(v as f64)
+        }
+
+        fn visit_u64<E: de::Error>(self, v: u64) -> std::result::Result<f64, E> {
+            Ok(v as f64)
+        }
+
+        fn visit_str<E: de::Error>(self, v: &str) -> std::result::Result<f64, E> {
+            v.parse::<f64>().map_err(de::Error::custom)
+        }
+    }
+
+    deserializer.deserialize_any(PriceVisitor)
+}
+
 const BASE_URL: &str = "https://data-api.polymarket.com";
 const GAMMA_URL: &str = "https://gamma-api.polymarket.com";
 const CLOB_URL: &str = "https://clob.polymarket.com";
@@ -186,11 +222,13 @@ pub struct GammaEvent {
 // Deserialization structs — CLOB API (orderbook, prices, trades)
 // ---------------------------------------------------------------------------
 
-/// Price history point from CLOB prices-history endpoint
+/// Price history point from CLOB prices-history endpoint.
+/// The `p` field can be a number (0.505) or a string ("0.505") depending on the API version.
 #[derive(Debug, Clone, Deserialize)]
 pub struct PriceHistoryPoint {
     pub t: i64,
-    pub p: String,
+    #[serde(deserialize_with = "deserialize_price")]
+    pub p: f64,
 }
 
 /// A single trade from the CLOB trades endpoint
